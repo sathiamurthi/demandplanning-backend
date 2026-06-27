@@ -103,16 +103,11 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
-// ── Health check ─────────────────────────────────────────────
+// ── Health check — must return 200 immediately (no DB) ───────
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), service: 'genericdemandai-api', version: '2.0.0' });
 });
-
-app.get('/v1/health', async (_req, res) => {
-  const { checkDbConnection } = await import('./config/db');
-  const dbOk = await checkDbConnection();
-  res.json({ status: dbOk ? 'ok' : 'degraded', database: dbOk ? 'connected' : 'error', timestamp: new Date().toISOString() });
-});
+// /v1/health handled by healthRouter below — returns 200 immediately
 
 // ── CQRS bus status (superadmin debug) ───────────────────────
 app.get('/v1/debug/commands', authMiddleware, async (req, res) => {
