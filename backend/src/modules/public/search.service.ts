@@ -804,7 +804,6 @@ Return ONLY the JSON object.`;
 
       const qsStart = Date.now();
       const rawGemini = await callGemini({ prompt: promptTest, maxTokens: 2000, responseMimeType: 'application/json' });
-      testResult.qsRawText = rawGemini.text?.substring(0, 500);
       testResult.qsRawLength = rawGemini.text?.length;
       testResult.qsMs = Date.now() - qsStart;
       const jsonMatch = rawGemini.text?.match(/\{[\s\S]*\}/);
@@ -815,7 +814,22 @@ Return ONLY the JSON object.`;
           testResult.qsCategories = Object.keys(parsed).length;
           testResult.qsTotal = Object.values(parsed).reduce((s: number, v: any) => s + (Array.isArray(v) ? v.length : 0), 0);
           testResult.qsSample = Object.keys(parsed).slice(0, 5);
-        } catch (e: any) { testResult.qsParseError = e.message; }
+        } catch (e: any) {
+          testResult.qsParseError = e.message;
+          // Show the area around the parse error
+          const errMatch = e.message.match(/position (\d+)/);
+          if (errMatch) {
+            const pos = parseInt(errMatch[1]);
+            testResult.qsErrorContext = jsonMatch[0].substring(Math.max(0, pos - 100), pos + 100);
+          }
+          // Try cleaning the JSON
+          try {
+            const cleaned = jsonMatch[0].replace(/[ --]/g, ' ');
+            const parsed2 = JSON.parse(cleaned);
+            testResult.qsCleanedCategories = Object.keys(parsed2).length;
+            testResult.qsCleanedTotal = Object.values(parsed2).reduce((s: number, v: any) => s + (Array.isArray(v) ? v.length : 0), 0);
+          } catch (e2: any) { testResult.qsCleanedError = e2.message; }
+        }
       }
     } else {
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
