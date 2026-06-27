@@ -228,6 +228,44 @@ Rules:
 Return ONLY the JSON object.`;
 }
 
+// ── Robust JSON parser for AI responses ──────────────────────
+function parseAIJson(text: string): Record<string, any[]> | null {
+  // Try direct parse first
+  try { return JSON.parse(text); } catch {}
+
+  // Fix common Gemini issues: trailing commas, smart quotes
+  const cleaned = text
+    .replace(/,(\s*[}\]])/g, '$1')         // trailing commas
+    .replace(/[‘’]/g, "'")        // smart single quotes → '
+    .replace(/[“”]/g, '"');       // smart double quotes → "
+
+  try { return JSON.parse(cleaned); } catch {}
+
+  // Find first complete JSON object by scanning for balanced braces
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const candidate = text.slice(start, i + 1);
+        try { return JSON.parse(candidate.replace(/,(\s*[}\]])/g, '$1')); } catch {}
+        break;
+      }
+    }
+  }
+  return null;
+}
+
 // ── AI Quick-Search (called on demand, with cache) ─────────────
 export async function aiQuickSearch(lat: number, lng: number, query: string): Promise<{
   cached: boolean;
@@ -261,26 +299,24 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
     let rawText = '';
 
     if (process.env.AI_PROVIDER === 'gemini') {
-      const geminiRes = await callGemini({ prompt, maxTokens: 1200, responseMimeType: 'application/json' });
+      const geminiRes = await callGemini({ prompt, maxTokens: 3000, responseMimeType: 'application/json' });
       rawText = geminiRes.text;
     } else {
       const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY });
       const msg = await client.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1200,
+        max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
       rawText = (msg.content[0] as any).text || '{}';
     }
 
     const text = rawText.trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      logger.warn(`[AI:QS] No JSON in response. Raw: ${text.slice(0, 300)}`);
+    const aiData: Record<string, any[]> = parseAIJson(text);
+    if (!aiData) {
+      logger.warn(`[AI:QS] No parseable JSON in response (${text.length} chars). Raw[:200]: ${text.slice(0, 200)}`);
       return { cached: false, results: dbResults };
     }
-
-    const aiData: Record<string, any[]> = JSON.parse(jsonMatch[0]);
     const validCategories = Object.entries(aiData).filter(([, v]) => Array.isArray(v) && v.length > 0);
     if (validCategories.length === 0) {
       logger.warn(`[AI:QS] AI returned empty categories at ${lat},${lng}`);
