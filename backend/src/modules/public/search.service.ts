@@ -756,6 +756,39 @@ publicSearchRouter.post('/location', locationLimiter, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────
+// GET /v1/public/ai-debug  — temporary debug endpoint
+// ──────────────────────────────────────────────────────────────
+publicSearchRouter.get('/ai-debug', async (_req, res) => {
+  try {
+    const aiProvider = process.env.AI_PROVIDER || 'claude';
+    const geminiKey = process.env.GEMINI_API_KEY ? `${process.env.GEMINI_API_KEY.substring(0, 10)}...` : 'NOT SET';
+    const claudeKey = process.env.CLAUDE_API_KEY ? `${process.env.CLAUDE_API_KEY.substring(0, 15)}...` : 'NOT SET';
+
+    let testResult: any = { provider: aiProvider, geminiKey, claudeKey };
+
+    if (aiProvider === 'gemini') {
+      const { callGemini } = await import('../auth/gemini.service');
+      const start = Date.now();
+      const r = await callGemini({ prompt: 'Return this exact JSON: {"test":"ok","status":"working"}', maxTokens: 100, responseMimeType: 'application/json' });
+      testResult.rawText = r.text;
+      testResult.ms = Date.now() - start;
+      testResult.model = r.model;
+    } else {
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
+      const start = Date.now();
+      const msg = await client.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 100, messages: [{ role: 'user', content: 'Return this JSON: {"test":"ok"}' }] });
+      testResult.rawText = (msg.content[0] as any).text;
+      testResult.ms = Date.now() - start;
+    }
+
+    ok(res, testResult);
+  } catch (err: any) {
+    ok(res, { error: err.message, stack: err.stack?.substring(0, 500), provider: process.env.AI_PROVIDER });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
 // GET /v1/public/quicksearch
 // Return cached nearby places grouped by category.
 // Falls back automatically: DB cache → Overpass → AI (stores result).
