@@ -179,28 +179,5 @@ class GenerateReportCommandHandler
 commandBus.register('ai.generateReport', new GenerateReportCommandHandler());
 
 // ============================================================
-// 🟢 ALERT MODULE (FIXED)
-// ============================================================
-
-interface MarkAlertReadCommand extends ICommand {
-  type: 'alert.markRead';
-  alertId: string;
-}
-
-class MarkAlertReadHandler
-  implements ICommandHandler<MarkAlertReadCommand, any>
-{
-  async execute(cmd: MarkAlertReadCommand) {
-    const [r] = await query(
-      `UPDATE ai_alerts SET is_read=TRUE WHERE id=$1 RETURNING *`,
-      [cmd.alertId]
-    );
-    return r;
-  }
-}
-
-commandBus.register('alert.markRead', new MarkAlertReadHandler());
-
-// ============================================================
 // 🟢 DASHBOARD (FIXED)
 // ============================================================
