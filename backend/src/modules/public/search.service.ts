@@ -775,14 +775,48 @@ publicSearchRouter.get('/ai-debug', async (_req, res) => {
       testResult.ms = Date.now() - start;
       testResult.model = r.model;
 
-      // Also test actual quicksearch AI
+      // Test actual quicksearch prompt → see raw Gemini response
+      const promptTest = `You are a local area assistant for India. The user is at coordinates lat=13.0100, lng=77.6600.
+
+Known nearby places from our platform:
+No local listings found nearby in our platform.
+
+User query: "restaurants shops hospitals pharmacies"
+
+Based on these coordinates (which are in India), generate a realistic JSON response of nearby places.
+Identify the likely Indian city/area from the coordinates and create plausible place names for that area.
+
+Return ONLY a valid JSON object (no markdown, no code fences, no explanation).
+Keys should be category names, values should be arrays of place objects.
+Each place object: { "name": string, "type": string, "description": string, "dist_km_estimate": number, "tip": string }
+
+Categories to include (only if relevant to the query, minimum 4 categories):
+restaurant, hospital, pharmacy, school, atm, bank, hotel, shop, temple, fuel
+
+Rules:
+- Generate 3-5 realistic places per category
+- Use authentic Indian business names
+- dist_km_estimate should be between 0.1 and 2.5
+- Make descriptions specific and helpful
+- Always return at least the categories: restaurant, shop, pharmacy, atm
+
+Return ONLY the JSON object.`;
+
       const qsStart = Date.now();
-      const qs = await aiQuickSearch(13.01, 77.66, 'restaurants shops hospitals pharmacies');
-      testResult.qsCached = qs.cached;
-      testResult.qsCategories = Object.keys(qs.results).length;
-      testResult.qsTotal = Object.values(qs.results).reduce((s, a) => s + a.length, 0);
+      const rawGemini = await callGemini({ prompt: promptTest, maxTokens: 2000, responseMimeType: 'application/json' });
+      testResult.qsRawText = rawGemini.text?.substring(0, 500);
+      testResult.qsRawLength = rawGemini.text?.length;
       testResult.qsMs = Date.now() - qsStart;
-      testResult.qsSample = Object.keys(qs.results).slice(0, 3);
+      const jsonMatch = rawGemini.text?.match(/\{[\s\S]*\}/);
+      testResult.qsJsonMatchFound = !!jsonMatch;
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          testResult.qsCategories = Object.keys(parsed).length;
+          testResult.qsTotal = Object.values(parsed).reduce((s: number, v: any) => s + (Array.isArray(v) ? v.length : 0), 0);
+          testResult.qsSample = Object.keys(parsed).slice(0, 5);
+        } catch (e: any) { testResult.qsParseError = e.message; }
+      }
     } else {
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
       const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
