@@ -757,8 +757,9 @@ publicSearchRouter.post('/location', locationLimiter, async (req, res) => {
 
 // ──────────────────────────────────────────────────────────────
 // GET /v1/public/quicksearch
-// Return cached nearby places grouped by category
-// Query params: lat, lng, category? (optional filter), ai? (true to trigger AI)
+// Return cached nearby places grouped by category.
+// Falls back automatically: DB cache → Overpass → AI (stores result).
+// Query params: lat, lng, category? (optional filter), ai? (force AI), q? (query hint)
 // ──────────────────────────────────────────────────────────────
 publicSearchRouter.get('/quicksearch', async (req, res) => {
   try {
@@ -768,19 +769,20 @@ publicSearchRouter.get('/quicksearch', async (req, res) => {
     const lngF = parseFloat(lng);
     if (isNaN(latF) || isNaN(lngF)) return fail(res, 'Invalid coordinates');
 
-    // Import on first use (avoids circular at module load time)
-    const { getCachedQuickSearch, aiQuickSearch, fetchAndCacheCategory } = await import('./background.service');
+    const { getCachedQuickSearch, aiQuickSearch, fetchAndCacheCategory, triggerAIEnrichmentAsync } =
+      await import('./background.service');
 
+    // 1. Explicit AI request — use AI (with cache check inside)
     if (ai === 'true' && q.trim()) {
       const { cached, results } = await aiQuickSearch(latF, lngF, q.trim());
       const filtered = category ? { [category]: results[category] || [] } : results;
       return ok(res, filtered, { source: cached ? 'cache' : 'ai', lat: latF, lng: lngF });
     }
 
+    // 2. Check cache (memory first, then DB)
     const { hit, data } = await getCachedQuickSearch(latF, lngF);
 
-    // Cache miss for a specific category → live fetch from server (DB or Overpass)
-    // This avoids the browser having to call Overpass directly (CORS/rate-limit issues)
+    // 3. Cache miss for a specific category → live fetch (DB/Overpass)
     if (category && (!hit || !(data[category]?.length))) {
       try {
         const liveItems = await fetchAndCacheCategory(latF, lngF, category);
@@ -790,6 +792,31 @@ publicSearchRouter.get('/quicksearch', async (req, res) => {
       } catch (e: any) {
         logger.warn(`Live fetch failed for ${category}: ${e.message}`);
       }
+    }
+
+    // 4. Full cache miss (no data at all) → call AI synchronously and cache result
+    const hasData = hit && Object.values(data).some(arr => arr.length > 0);
+    if (!hasData) {
+      const query = q.trim() || 'restaurants shops hospitals pharmacies schools banks atm temples hotels nearby';
+      try {
+        const { cached, results } = await aiQuickSearch(latF, lngF, query);
+        const hasResults = Object.values(results).some(arr => arr.length > 0);
+        if (hasResults) {
+          const filtered = category ? { [category]: results[category] || [] } : results;
+          return ok(res, filtered, { source: cached ? 'cache' : 'ai', lat: latF, lng: lngF });
+        }
+      } catch (e: any) {
+        logger.warn(`[QS] AI fallback failed: ${e.message}`);
+      }
+      // AI failed — schedule background enrichment for next request and return empty
+      triggerAIEnrichmentAsync(latF, lngF);
+      return ok(res, {}, { source: 'miss', lat: latF, lng: lngF });
+    }
+
+    // 5. Partial cache hit — trigger background AI enrichment to fill gaps
+    const totalItems = Object.values(data).reduce((s, arr) => s + arr.length, 0);
+    if (totalItems < 5) {
+      triggerAIEnrichmentAsync(latF, lngF);
     }
 
     const filtered = category ? { [category]: data[category] || [] } : data;
