@@ -2,6 +2,12 @@ import { Request, Response, Router } from "express";
 import { queryBus } from "../../cqrs/queryBus";
 import { commandBus } from "../../cqrs/commandBus";
 import { query as dbQuery } from "../../config/db";
+import {
+  getAIUsageSummary,
+  getPipelineRuns,
+  getPipelineRun,
+  runAIPipeline,
+} from "./ai-pipeline.service";
 
 import {
   GetTenantsQuery,
@@ -179,6 +185,70 @@ export async function reactivateExploreGuest(req: Request, res: Response) {
   }
 }
 
+// ── AI Usage Report ───────────────────────────────────────────
+
+export async function getAIUsageReport(req: Request, res: Response) {
+  try {
+    const range = ((req.query.range as string) || 'daily') as 'daily' | 'weekly' | 'monthly';
+    const data = await getAIUsageSummary(range);
+    res.json({ success: true, data });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// ── AI Pipeline ───────────────────────────────────────────────
+
+export async function listPipelineRuns(req: Request, res: Response) {
+  try {
+    const limit = Math.min(50, parseInt((req.query.limit as string) || '20'));
+    const runs = await getPipelineRuns(limit);
+    res.json({ success: true, data: runs });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function getPipelineRunById(req: Request, res: Response) {
+  try {
+    const run = await getPipelineRun(req.params.runId as string);
+    if (!run) { res.status(404).json({ success: false, error: 'Run not found' }); return; }
+    res.json({ success: true, data: run });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function triggerPipelineRun(req: Request, res: Response) {
+  try {
+    const { storeId, storeName, tenantId } = req.body;
+    if (!storeId || !tenantId) {
+      res.status(400).json({ success: false, error: 'storeId and tenantId are required' });
+      return;
+    }
+    const triggeredBy = (req as any).user?.id;
+    const result = await runAIPipeline(storeId, storeName || 'Unknown Store', tenantId, triggeredBy);
+    res.json({ success: true, data: result });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function getStoresForPipeline(req: Request, res: Response) {
+  try {
+    const stores = await dbQuery<any>(
+      `SELECT s.id, s.name, s.city, t.id AS tenant_id, t.name AS tenant_name
+       FROM stores s
+       JOIN tenants t ON t.id = s.tenant_id
+       WHERE s.is_active = TRUE
+       ORDER BY t.name, s.name LIMIT 100`
+    );
+    res.json({ success: true, data: stores });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
 // Router setup
 const router = Router();
 
@@ -198,5 +268,14 @@ router.get("/explore/stats", getExploreStats);
 router.get("/explore/guests", listExploreGuests);
 router.post("/explore/guests/:guestId/deactivate", deactivateExploreGuest);
 router.post("/explore/guests/:guestId/reactivate", reactivateExploreGuest);
+
+// AI Usage report
+router.get("/ai-usage", getAIUsageReport);
+
+// AI Pipeline
+router.get("/ai-pipeline/stores", getStoresForPipeline);
+router.get("/ai-pipeline/runs", listPipelineRuns);
+router.get("/ai-pipeline/runs/:runId", getPipelineRunById);
+router.post("/ai-pipeline/run", triggerPipelineRun);
 
 export default router;

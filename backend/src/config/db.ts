@@ -2074,5 +2074,52 @@ END $$;
     CREATE INDEX        IF NOT EXISTS idx_qsc_expires ON quick_search_cache(expires_at);
   `
 },
+{
+  name: '051_ai_usage_logs',
+  sql: `
+    CREATE TABLE IF NOT EXISTS ai_usage_logs (
+      id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      feature           VARCHAR(100) NOT NULL,
+      agent_name        VARCHAR(100),
+      pipeline_run_id   UUID,
+      model             VARCHAR(100) NOT NULL,
+      prompt_tokens     INT          DEFAULT 0,
+      completion_tokens INT          DEFAULT 0,
+      latency_ms        INT,
+      status            VARCHAR(20)  DEFAULT 'success',
+      error_msg         TEXT,
+      tenant_id         UUID,
+      store_id          UUID,
+      metadata          JSONB        DEFAULT '{}',
+      created_at        TIMESTAMPTZ  DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_logs_feature  ON ai_usage_logs(feature, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_logs_pipeline ON ai_usage_logs(pipeline_run_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_logs_tenant   ON ai_usage_logs(tenant_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_logs_created  ON ai_usage_logs(created_at DESC);
+  `
+},
+{
+  name: '052_ai_pipeline_runs',
+  sql: `
+    CREATE TABLE IF NOT EXISTS ai_pipeline_runs (
+      id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      tenant_id        UUID,
+      store_id         UUID,
+      store_name       VARCHAR(200),
+      triggered_by     UUID,
+      status           VARCHAR(20)  DEFAULT 'running',
+      agents_completed INT          DEFAULT 0,
+      agents_total     INT          DEFAULT 6,
+      total_tokens     INT          DEFAULT 0,
+      result           JSONB,
+      error            TEXT,
+      started_at       TIMESTAMPTZ  DEFAULT NOW(),
+      completed_at     TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_tenant  ON ai_pipeline_runs(tenant_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_started ON ai_pipeline_runs(started_at DESC);
+  `
+},
   ];
 }

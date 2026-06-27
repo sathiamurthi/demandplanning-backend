@@ -9,6 +9,7 @@ import { commandBus, ICommand, ICommandHandler } from '../../cqrs/commandBus';
 import { queryBus, IQuery, IQueryHandler } from '../../cqrs/queryBus';
 import { authMiddleware } from '../auth/auth.service';
 import { requireMinRole, requireRole } from '../../core/guards/roleGuard';
+import { logAIUsage } from '../superadmin/ai-pipeline.service';
 
 function ok(res: any, data: any, status = 200) {
   res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
@@ -223,13 +224,16 @@ ${JSON.stringify(promptData, null, 2)}`;
 
     // 7. Call Claude — email stays out of the prompt entirely
     let aiMessage: any;
+    const _t0Forecast = Date.now();
     try {
       aiMessage = await this.anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
+      logAIUsage({ feature: 'forecast', model: 'claude-sonnet-4-20250514', promptTokens: aiMessage.usage.input_tokens, completionTokens: aiMessage.usage.output_tokens, latencyMs: Date.now() - _t0Forecast, status: 'success', tenantId: cmd.tenantId, storeId: cmd.storeId });
     } catch (err: any) {
+      logAIUsage({ feature: 'forecast', model: 'claude-sonnet-4-20250514', promptTokens: 0, completionTokens: 0, latencyMs: Date.now() - _t0Forecast, status: 'error', errorMsg: err.message, tenantId: cmd.tenantId, storeId: cmd.storeId });
       throw new Error(`AI service error: ${err.message}`);
     }
 
@@ -380,11 +384,13 @@ Search query: "${sanitized.clean}"
 Items: ${JSON.stringify(allItems.map(i => ({ id: i.id, name: i.name, brand: i.brand })))}
 Respond ONLY with a JSON array of item IDs, most relevant first, max 10: ["id1","id2",...]`;
 
+    const _t0Search = Date.now();
     const msg = await this.anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 200,
       messages: [{ role: 'user', content: prompt }],
     });
+    logAIUsage({ feature: 'search', model: 'claude-sonnet-4-20250514', promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens, latencyMs: Date.now() - _t0Search, status: 'success' });
 
     const rawText = (msg.content[0] as any).text.replace(/```json|```/g, '').trim();
     const ids: string[] = JSON.parse(rawText);
@@ -615,11 +621,13 @@ Suggest the following fields. Respond ONLY with valid JSON — no markdown, no p
   "notes": "<one sentence of useful context for this item, max 100 chars>"
 }`;
 
+    const _t0Suggest = Date.now();
     const msg = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       messages: [{ role: 'user', content: prompt }],
     });
+    logAIUsage({ feature: 'suggest', model: 'claude-haiku-4-5-20251001', promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens, latencyMs: Date.now() - _t0Suggest, status: 'success' });
 
     const rawText = (msg.content[0] as any).text.replace(/```json|```/g, '').trim();
     let suggestion: any;
