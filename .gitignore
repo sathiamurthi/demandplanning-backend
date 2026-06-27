@@ -8,3 +8,4 @@ __azurite_db_queue*.json
 docker/
 deployment/
 .dockerignore
+package-lock.json
