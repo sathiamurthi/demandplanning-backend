@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+backend/.env
+*.log
+__queuestorage__/
+__azurite_db_queue*.json
+docker/
+deployment/
+.dockerignore

@@ -1,0 +1,74 @@
+services:
+  - type: web
+    name: demandplanning-backend
+    runtime: node
+    region: ohio
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node dist/index.js
+    healthCheckPath: /v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: demandplanning-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: demandplanning-redis
+          type: redis
+          property: connectionString
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        value: https://demandgenius.vercel.app
+      - key: ENABLE_AI
+        value: "true"
+      - key: ENABLE_BILLING
+        value: "true"
+      - key: ENABLE_AUDIT_LOG
+        value: "true"
+      - key: ENABLE_WHATSAPP
+        value: "true"
+      - key: WHATSAPP_API_VERSION
+        value: v25.0
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_WABA_ID
+        sync: false
+      - key: WHATSAPP_APP_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM_NAME
+        value: DemandPlanning
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: LOG_LEVEL
+        value: info
+
+databases:
+  - name: demandplanning-db
+    region: ohio
+    plan: free
+    databaseName: dplaning
+    user: dplaning_user
