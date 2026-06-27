@@ -768,11 +768,21 @@ publicSearchRouter.get('/ai-debug', async (_req, res) => {
 
     if (aiProvider === 'gemini') {
       const { callGemini } = await import('../auth/gemini.service');
+      const { aiQuickSearch } = await import('./background.service');
       const start = Date.now();
       const r = await callGemini({ prompt: 'Return this exact JSON: {"test":"ok","status":"working"}', maxTokens: 100, responseMimeType: 'application/json' });
       testResult.rawText = r.text;
       testResult.ms = Date.now() - start;
       testResult.model = r.model;
+
+      // Also test actual quicksearch AI
+      const qsStart = Date.now();
+      const qs = await aiQuickSearch(13.01, 77.66, 'restaurants shops hospitals pharmacies');
+      testResult.qsCached = qs.cached;
+      testResult.qsCategories = Object.keys(qs.results).length;
+      testResult.qsTotal = Object.values(qs.results).reduce((s, a) => s + a.length, 0);
+      testResult.qsMs = Date.now() - qsStart;
+      testResult.qsSample = Object.keys(qs.results).slice(0, 3);
     } else {
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
       const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
