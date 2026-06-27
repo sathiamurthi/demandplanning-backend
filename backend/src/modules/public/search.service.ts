@@ -756,27 +756,6 @@ publicSearchRouter.post('/location', locationLimiter, async (req, res) => {
 });
 
 // GET /v1/public/ai-debug  - debug endpoint
-// ──────────────────────────────────────────────────────────────
-publicSearchRouter.get('/ai-debug', async (_req, res) => {
-  try {
-    const { aiQuickSearch } = await import('./background.service');
-    const t = Date.now();
-    const qs = await aiQuickSearch(13.01, 77.66, 'restaurants shops hospitals pharmacies');
-    ok(res, {
-      provider: process.env.AI_PROVIDER || 'claude',
-      geminiKeySet: !!process.env.GEMINI_API_KEY,
-      qsCached: qs.cached,
-      qsCategories: Object.keys(qs.results).length,
-      qsTotal: Object.values(qs.results).reduce((s, a) => s + a.length, 0),
-      qsMs: Date.now() - t,
-      qsSample: Object.keys(qs.results).slice(0, 5),
-      qsFirstItem: Object.values(qs.results)[0]?.[0],
-    });
-  } catch (err: any) {
-    ok(res, { error: err.message, stack: err.stack?.substring(0, 500) });
-  }
-});
-
 // GET /v1/public/quicksearch// GET /v1/public/quicksearch
 // Return cached nearby places grouped by category.
 // Falls back automatically: DB cache → Overpass → AI (stores result).
@@ -860,4 +839,5 @@ function buildMapsUrl(address?: string, city?: string, state?: string, pincode?:
   const q = encodeURIComponent(parts.join(', '));
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
+
 
