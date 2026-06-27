@@ -312,7 +312,7 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
     }
 
     const text = rawText.trim();
-    const aiData: Record<string, any[]> = parseAIJson(text);
+    const aiData = parseAIJson(text);
     if (!aiData) {
       logger.warn(`[AI:QS] No parseable JSON in response (${text.length} chars). Raw[:200]: ${text.slice(0, 200)}`);
       return { cached: false, results: dbResults };
