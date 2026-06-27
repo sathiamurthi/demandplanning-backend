@@ -3,6 +3,7 @@
 // ============================================================
 import { Router } from 'express';
 import { query, queryOne } from '../../config/db';
+import { logger } from '../../config/logger';
 import rateLimit from 'express-rate-limit';
 
 export const publicSearchRouter = Router();
@@ -768,7 +769,7 @@ publicSearchRouter.get('/quicksearch', async (req, res) => {
     if (isNaN(latF) || isNaN(lngF)) return fail(res, 'Invalid coordinates');
 
     // Import on first use (avoids circular at module load time)
-    const { getCachedQuickSearch, aiQuickSearch } = await import('./background.service');
+    const { getCachedQuickSearch, aiQuickSearch, fetchAndCacheCategory } = await import('./background.service');
 
     if (ai === 'true' && q.trim()) {
       const { cached, results } = await aiQuickSearch(latF, lngF, q.trim());
@@ -777,6 +778,20 @@ publicSearchRouter.get('/quicksearch', async (req, res) => {
     }
 
     const { hit, data } = await getCachedQuickSearch(latF, lngF);
+
+    // Cache miss for a specific category → live fetch from server (DB or Overpass)
+    // This avoids the browser having to call Overpass directly (CORS/rate-limit issues)
+    if (category && (!hit || !(data[category]?.length))) {
+      try {
+        const liveItems = await fetchAndCacheCategory(latF, lngF, category);
+        if (liveItems.length > 0) {
+          return ok(res, { [category]: liveItems }, { source: 'live', lat: latF, lng: lngF });
+        }
+      } catch (e: any) {
+        logger.warn(`Live fetch failed for ${category}: ${e.message}`);
+      }
+    }
+
     const filtered = category ? { [category]: data[category] || [] } : data;
     return ok(res, filtered, { source: hit ? 'cache' : 'miss', lat: latF, lng: lngF });
   } catch (e: any) { fail(res, e.message, 500); }

@@ -106,6 +106,45 @@ async function upsertCache(
   );
 }
 
+// ── On-demand live fetch for a single category (called from quicksearch on cache miss) ──
+export async function fetchAndCacheCategory(lat: number, lng: number, category: string): Promise<any[]> {
+  const latG = toGrid(lat);
+  const lngG = toGrid(lng);
+
+  if (DB_CATEGORIES.includes(category)) {
+    // Query our own public_listings table
+    const rows = await dbQuery<any>(
+      `SELECT id, name, address, city, phone, rate_info, available_now,
+              ROUND((6371 * acos(LEAST(1,
+                cos(radians($1)) * cos(radians(lat)) *
+                cos(radians(lng) - radians($2)) +
+                sin(radians($1)) * sin(radians(lat))
+              )))::numeric, 2) AS dist_km
+       FROM public_listings
+       WHERE is_active = TRUE AND lat IS NOT NULL AND lng IS NOT NULL
+         AND LOWER(type) = LOWER($3)
+         AND (6371 * acos(LEAST(1,
+               cos(radians($1)) * cos(radians(lat)) *
+               cos(radians(lng) - radians($2)) +
+               sin(radians($1)) * sin(radians(lat))
+             ))) < $4
+       ORDER BY dist_km LIMIT 25`,
+      [lat, lng, category, RADIUS_KM * 3]  // 3× radius for on-demand fetch
+    );
+    const items = rows.map((l: any) => ({
+      id: l.id, name: l.name, address: l.address, city: l.city,
+      phone: l.phone, dist_km: l.dist_km, rate_info: l.rate_info, available_now: l.available_now,
+    }));
+    if (items.length > 0) await upsertCache(latG, lngG, category, items, 'db');
+    return items;
+  }
+
+  // OSM category via Overpass (runs on server — no browser CORS issue)
+  const places = await fetchOverpass(lat, lng, category);
+  if (places.length > 0) await upsertCache(latG, lngG, category, places, 'overpass');
+  return places;
+}
+
 // ── Store AI quick-search result in cache ─────────────────────
 export async function cacheAIQuickSearch(lat: number, lng: number, aiData: Record<string, any[]>) {
   const latG = toGrid(lat);
@@ -262,7 +301,7 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
 
   // 3. Call Claude AI
   try {
-    const client = new Anthropic();
+    const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY });
     const contextStr = Object.entries(dbResults)
       .filter(([, v]) => v.length > 0)
       .map(([cat, items]) => `${cat}: ${items.slice(0, 3).map((i: any) => i.name).join(', ')}`)
