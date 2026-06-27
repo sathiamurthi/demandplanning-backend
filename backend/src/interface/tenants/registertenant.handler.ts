@@ -95,7 +95,7 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
       }
 
       if (phoneNorm) {
-        sendRegistrationWhatsApp(phoneNorm, firstName || '', companyName).catch((e: Error) =>
+        sendRegistrationWhatsApp(phoneNorm, firstName || '', companyName, tenant.plan_type).catch((e: Error) =>
           console.warn('[whatsapp] Registration message failed:', e.message)
         );
       }

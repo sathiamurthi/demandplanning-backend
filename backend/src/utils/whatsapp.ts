@@ -75,16 +75,27 @@ export async function sendWhatsAppText(to: string, body: string): Promise<WhatsA
 export async function sendRegistrationWhatsApp(
   phone: string,
   firstName: string,
-  companyName?: string
+  companyName?: string,
+  planType?: string
 ): Promise<WhatsAppSendResult> {
   const name = firstName || 'there';
-  const business = companyName ? ` for ${companyName}` : '';
   const frontendUrl = (process.env.FRONTEND_URL || 'https://demandgenius.vercel.app').split(',')[0];
+  const plan = (planType || 'free').charAt(0).toUpperCase() + (planType || 'free').slice(1);
+  const business = companyName ? companyName : 'your business';
 
-  return sendWhatsAppText(
-    phone,
-    `Welcome to DemandGenius, ${name}! Your account${business} is ready. Sign in at ${frontendUrl}/login with your phone number and password.`
-  );
+  const msg = [
+    `Hi ${name}! Welcome to DemandGenius 🎉`,
+    ``,
+    `Your account is ready:`,
+    `🏢 Business: ${business}`,
+    `💎 Plan: ${plan}`,
+    `🔗 Login: ${frontendUrl}/login`,
+    ``,
+    `Sign in with your phone number and password.`,
+    `Need help? Reply to this message anytime.`,
+  ].join('\n');
+
+  return sendWhatsAppText(phone, msg);
 }
 
 export async function sendPasswordResetWhatsApp(
