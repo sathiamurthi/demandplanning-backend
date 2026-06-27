@@ -83,7 +83,7 @@ export async function sendRegistrationWhatsApp(
 
   return sendWhatsAppText(
     phone,
-    `Welcome to DemandPlanning, ${name}! Your account${business} is ready. Sign in at ${frontendUrl}/login with your phone number and password.`
+    `Welcome to DemandGenius, ${name}! Your account${business} is ready. Sign in at ${frontendUrl}/login with your phone number and password.`
   );
 }
 
@@ -96,6 +96,6 @@ export async function sendPasswordResetWhatsApp(
 
   return sendWhatsAppText(
     phone,
-    `DemandPlanning password reset: ${link}\nThis link expires in 1 hour. If you did not request this, ignore this message.`
+    `DemandGenius password reset: ${link}\nThis link expires in 1 hour. If you did not request this, ignore this message.`
   );
 }

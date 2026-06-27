@@ -30,7 +30,7 @@ const OS_CATEGORIES  = ['atm', 'bank', 'temple', 'mosque', 'church', 'fuel', 'pa
 // All combined for the quick-search API response
 export const ALL_CATEGORIES = [...DB_CATEGORIES, ...OS_CATEGORIES];
 
-// Overpass amenity tag mapping
+// Overpass amenity tag mapping (includes DB category fallbacks for when our DB has no local data)
 const OVERPASS_TAGS: Record<string, string> = {
   atm:        'amenity=atm',
   bank:       'amenity=bank',
@@ -40,6 +40,12 @@ const OVERPASS_TAGS: Record<string, string> = {
   fuel:       'amenity=fuel',
   parking:    'amenity=parking',
   supermarket:'shop=supermarket',
+  // DB category fallbacks via OSM
+  hotel:      'tourism~"hotel|guest_house|hostel"',
+  restaurant: 'amenity~"restaurant|cafe|fast_food"',
+  hospital:   'amenity~"hospital|clinic"',
+  pharmacy:   'amenity=pharmacy',
+  school:     'amenity~"school|college|university"',
 };
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -135,12 +141,16 @@ export async function fetchAndCacheCategory(lat: number, lng: number, category: 
       id: l.id, name: l.name, address: l.address, city: l.city,
       phone: l.phone, dist_km: l.dist_km, rate_info: l.rate_info, available_now: l.available_now,
     }));
-    if (items.length > 0) await upsertCache(latG, lngG, category, items, 'db');
-    return items;
+    if (items.length > 0) {
+      await upsertCache(latG, lngG, category, items, 'db');
+      return items;
+    }
+    // DB has no data for this location → fall back to Overpass (e.g. hotels/restaurants in OSM)
   }
 
-  // OSM category via Overpass (runs on server — no browser CORS issue)
-  const places = await fetchOverpass(lat, lng, category);
+  // OSM category via Overpass — runs on server, no browser CORS issues
+  // Use 5km radius for on-demand searches so users actually find results
+  const places = await fetchOverpass(lat, lng, category, 5);
   if (places.length > 0) await upsertCache(latG, lngG, category, places, 'overpass');
   return places;
 }
@@ -224,17 +234,17 @@ async function populateFromDB(lat: number, lng: number) {
 }
 
 // ── SERVICE 2: Overpass API enrichment ────────────────────────
-async function fetchOverpass(lat: number, lng: number, category: string): Promise<any[]> {
+async function fetchOverpass(lat: number, lng: number, category: string, radiusKm = RADIUS_KM): Promise<any[]> {
   const tag = OVERPASS_TAGS[category];
   if (!tag) return [];
 
-  // Build Overpass QL query
-  const query = `[out:json][timeout:15];
+  const r = radiusKm * 1000;
+  const query = `[out:json][timeout:25];
 (
-  node[${tag}](around:${RADIUS_KM * 1000},${lat},${lng});
-  way[${tag}](around:${RADIUS_KM * 1000},${lat},${lng});
+  node[${tag}](around:${r},${lat},${lng});
+  way[${tag}](around:${r},${lat},${lng});
 );
-out center 20;`;
+out center 30;`;
 
   try {
     const res = await fetch('https://overpass-api.de/api/interpreter', {

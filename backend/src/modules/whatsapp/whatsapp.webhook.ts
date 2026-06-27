@@ -120,8 +120,15 @@ async function handleMessage(waPhone: string, text: string) {
     return;
   }
 
-  // ── Help (always available) ──
-  if (lower === 'help' || lower === 'hi' || lower === 'hello' || lower === 'start') {
+  // ── Hi / Hello / Start → two-card welcome ──
+  if (lower === 'hi' || lower === 'hello' || lower === 'start') {
+    await sendWhatsAppText(waPhone, userFlowCard());
+    await sendWhatsAppText(waPhone, benefitCard());
+    return;
+  }
+
+  // ── Help ──
+  if (lower === 'help') {
     await sendWhatsAppText(waPhone, helpText());
     return;
   }
@@ -176,7 +183,7 @@ async function handleMessage(waPhone: string, text: string) {
   }
 
   await sendWhatsAppText(waPhone,
-    `👋 *Welcome to DemandPlanning!*\n\n` +
+    `👋 *Welcome to DemandGenius!*\n\n` +
     `Your AI-powered store assistant — search products, check stock, and explore nearby stores across Grocery, Pharma, Auto Parts & Tea.\n\n` +
     `*Try these right now:*\n` +
     `  🔍 Type any product name — _rice, paracetamol, oil filter_\n` +
@@ -481,10 +488,59 @@ function extractSearchTerm(lower: string, original: string): string | null {
   return null;
 }
 
+// ── User flow card (sent on hi/hello/start) ───────────────────
+function userFlowCard(): string {
+  return (
+    `👋 *Welcome to DemandGenius!*\n` +
+    `_Your AI-powered life dashboard_\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📱 *HOW TO USE THE APP*\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `*Step 1 — Open the app*\n` +
+    `👉 ${metaConfig.exploreUrl}\n\n` +
+    `*Step 2 — Allow location access*\n` +
+    `📍 Tap Allow so we can show places near you\n\n` +
+    `*Step 3 — Quick Search*\n` +
+    `Tap any icon to find places instantly:\n` +
+    `🏨 Hotels  •  🍽 Restaurants  •  🏥 Hospitals\n` +
+    `💊 Pharmacies  •  🏦 ATMs/Banks  •  ⛽ Fuel\n` +
+    `🏫 Schools  •  🗺 Travel Spots\n\n` +
+    `*Step 4 — Ask AI*\n` +
+    `🤖 Type in the AI box:\n` +
+    `_"best restaurant under 1km"_\n` +
+    `_"24h pharmacy near me"_\n\n` +
+    `*Step 5 — Link Your Store* _(optional)_\n` +
+    `Connect your store account here on WhatsApp:\n` +
+    `🔐 *link {email} {password}*\n` +
+    `📊 Then get daily sales & low-stock alerts here!\n`
+  );
+}
+
+// ── Benefit card (sent on hi/hello/start after flow card) ────
+function benefitCard(): string {
+  return (
+    `✨ *Why DemandGenius?*\n\n` +
+    `✅ *100% Free* — no sign-up needed to explore\n` +
+    `📍 *Real-time nearby* — hotels, ATMs, hospitals, fuel & more\n` +
+    `🤖 *AI-powered search* — smart results even where maps fall short\n` +
+    `📊 *WhatsApp reports* — sales summary & low-stock alerts daily\n` +
+    `🛒 *Inventory management* — multi-store, real-time stock tracking\n` +
+    `📱 *Works as an app* — install on phone, no app store needed\n` +
+    `💬 *WhatsApp-first* — manage your store without opening a browser\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `*Quick Commands:*\n` +
+    `  *help*   — all commands\n` +
+    `  *stores* — browse registered stores\n` +
+    `  *stores bangalore* — filter by city\n` +
+    `  _or just type any product name to search_\n` +
+    footer('Start exploring now!')
+  );
+}
+
 // ── Help text ─────────────────────────────────────────────────
 function helpText(): string {
   return (
-    `📦 *DemandPlanning — AI Store Assistant*\n` +
+    `📦 *DemandGenius — AI Store Assistant*\n` +
     `_Grocery • Pharma • Auto Parts • Tea & more_\n\n` +
     `*🔍 Search products (no login needed):*\n` +
     `  rice  •  paracetamol  •  oil filter\n` +

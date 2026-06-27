@@ -10,7 +10,7 @@ healthRouter.get('/health', async (req, res) => {
   try {
     res.status(200).json({
       status: 'ok',
-      service: 'GenericDemandAI API',
+      service: 'DemandGenius API',
       version: '1.0.0',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),

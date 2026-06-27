@@ -46,7 +46,7 @@ export interface MetaConfig {
 
 // ── Build config from environment ────────────────────────────
 function buildConfig(): MetaConfig {
-  const appUrl = (process.env.PUBLIC_APP_URL || 'http://localhost:4000').replace(/\/$/, '');
+  const appUrl = (process.env.PUBLIC_APP_URL || 'https://demandgenius.vercel.app').replace(/\/$/, '');
 
   return {
     // Credentials
