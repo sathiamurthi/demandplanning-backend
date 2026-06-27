@@ -30,23 +30,27 @@ const OS_CATEGORIES  = ['atm', 'bank', 'temple', 'mosque', 'church', 'fuel', 'pa
 // All combined for the quick-search API response
 export const ALL_CATEGORIES = [...DB_CATEGORIES, ...OS_CATEGORIES];
 
-// Overpass amenity tag mapping (includes DB category fallbacks for when our DB has no local data)
-const OVERPASS_TAGS: Record<string, string> = {
-  atm:        'amenity=atm',
-  bank:       'amenity=bank',
-  temple:     'amenity=place_of_worship][religion=hindu',
-  mosque:     'amenity=place_of_worship][religion=muslim',
-  church:     'amenity=place_of_worship][religion=christian',
-  fuel:       'amenity=fuel',
-  parking:    'amenity=parking',
-  supermarket:'shop=supermarket',
-  // DB category fallbacks via OSM
-  hotel:      'tourism~"hotel|guest_house|hostel"',
-  restaurant: 'amenity~"restaurant|cafe|fast_food"',
-  hospital:   'amenity~"hospital|clinic"',
-  pharmacy:   'amenity=pharmacy',
-  school:     'amenity~"school|college|university"',
+// Overpass tag mapping — arrays allow multi-tag union queries (no regex, max compatibility)
+const OVERPASS_TAGS: Record<string, string[]> = {
+  atm:         ['amenity=atm'],
+  bank:        ['amenity=bank'],
+  temple:      ['amenity=place_of_worship][religion=hindu'],
+  mosque:      ['amenity=place_of_worship][religion=muslim'],
+  church:      ['amenity=place_of_worship][religion=christian'],
+  fuel:        ['amenity=fuel'],
+  parking:     ['amenity=parking'],
+  supermarket: ['shop=supermarket'],
+  // DB category fallbacks via OSM (simple equality tags for max server compatibility)
+  hotel:       ['tourism=hotel', 'tourism=guest_house', 'tourism=hostel'],
+  restaurant:  ['amenity=restaurant', 'amenity=fast_food', 'amenity=cafe'],
+  hospital:    ['amenity=hospital', 'amenity=clinic'],
+  pharmacy:    ['amenity=pharmacy'],
+  school:      ['amenity=school', 'amenity=college', 'amenity=university'],
 };
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
 
 // ── Helpers ───────────────────────────────────────────────────
 function toGrid(v: number): number {
@@ -235,43 +239,46 @@ async function populateFromDB(lat: number, lng: number) {
 
 // ── SERVICE 2: Overpass API enrichment ────────────────────────
 async function fetchOverpass(lat: number, lng: number, category: string, radiusKm = RADIUS_KM): Promise<any[]> {
-  const tag = OVERPASS_TAGS[category];
-  if (!tag) return [];
+  const tags = OVERPASS_TAGS[category];
+  if (!tags?.length) return [];
 
   const r = radiusKm * 1000;
-  const query = `[out:json][timeout:25];
-(
-  node[${tag}](around:${r},${lat},${lng});
-  way[${tag}](around:${r},${lat},${lng});
-);
-out center 30;`;
+  const parts = tags.flatMap(t => [
+    `node[${t}](around:${r},${lat},${lng});`,
+    `way[${t}](around:${r},${lat},${lng});`,
+  ]).join('\n');
+  const query = `[out:json][timeout:25];(\n${parts}\n);out center 30;`;
 
-  try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (!res.ok) return [];
-    const json: any = await res.json();
-    return (json.elements || []).map((el: any) => {
-      const elLat = el.lat ?? el.center?.lat;
-      const elLng = el.lon ?? el.center?.lon;
-      return {
-        id: String(el.id),
-        name: el.tags?.name || el.tags?.['name:en'] || category,
-        address: [el.tags?.['addr:street'], el.tags?.['addr:housenumber']].filter(Boolean).join(' ') || '',
-        city: el.tags?.['addr:city'] || '',
-        phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
-        dist_km: elLat && elLng ? Math.round(haversineKm(lat, lng, elLat, elLng) * 100) / 100 : null,
-        source: 'osm',
-      };
-    }).sort((a: any, b: any) => (a.dist_km ?? 99) - (b.dist_km ?? 99));
-  } catch (err: any) {
-    logger.warn(`Overpass fetch failed for ${category}: ${err.message}`);
-    return [];
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) continue;
+      const json: any = await res.json();
+      const elements = (json.elements || []).filter((el: any) => el.tags?.name);
+      if (elements.length === 0 && endpoint !== OVERPASS_ENDPOINTS[OVERPASS_ENDPOINTS.length - 1]) continue;
+      return elements.map((el: any) => {
+        const elLat = el.lat ?? el.center?.lat;
+        const elLng = el.lon ?? el.center?.lon;
+        return {
+          id: String(el.id),
+          name: el.tags.name,
+          address: [el.tags?.['addr:street'], el.tags?.['addr:housenumber']].filter(Boolean).join(' ') || '',
+          city: el.tags?.['addr:city'] || '',
+          phone: el.tags?.phone || el.tags?.['contact:phone'] || '',
+          dist_km: elLat && elLng ? Math.round(haversineKm(lat, lng, elLat, elLng) * 100) / 100 : null,
+          source: 'osm',
+        };
+      }).sort((a: any, b: any) => (a.dist_km ?? 99) - (b.dist_km ?? 99));
+    } catch (err: any) {
+      logger.warn(`Overpass fetch failed [${endpoint}] for ${category}: ${err.message}`);
+    }
   }
+  return [];
 }
 
 async function enrichFromOverpass(lat: number, lng: number) {
@@ -337,7 +344,9 @@ Return ONLY valid JSON, no markdown.`,
     });
 
     const text = (msg.content[0] as any).text?.trim() || '{}';
-    const aiData: Record<string, any[]> = JSON.parse(text.replace(/^```json\n?/, '').replace(/\n?```$/, ''));
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error(`AI returned no JSON. Raw: ${text.slice(0, 200)}`);
+    const aiData: Record<string, any[]> = JSON.parse(jsonMatch[0]);
 
     // 4. Cache AI result
     await cacheAIQuickSearch(lat, lng, aiData);
