@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // PUBLIC SEARCH SERVICE — Guest/Customer store & product search
 // ============================================================
 import { Router } from 'express';
@@ -755,99 +755,29 @@ publicSearchRouter.post('/location', locationLimiter, async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
-// ──────────────────────────────────────────────────────────────
-// GET /v1/public/ai-debug  — temporary debug endpoint
+// GET /v1/public/ai-debug  - debug endpoint
 // ──────────────────────────────────────────────────────────────
 publicSearchRouter.get('/ai-debug', async (_req, res) => {
   try {
-    const aiProvider = process.env.AI_PROVIDER || 'claude';
-    const geminiKey = process.env.GEMINI_API_KEY ? `${process.env.GEMINI_API_KEY.substring(0, 10)}...` : 'NOT SET';
-    const claudeKey = process.env.CLAUDE_API_KEY ? `${process.env.CLAUDE_API_KEY.substring(0, 15)}...` : 'NOT SET';
-
-    let testResult: any = { provider: aiProvider, geminiKey, claudeKey };
-
-    if (aiProvider === 'gemini') {
-      const { callGemini } = await import('../auth/gemini.service');
-      const { aiQuickSearch } = await import('./background.service');
-      const start = Date.now();
-      const r = await callGemini({ prompt: 'Return this exact JSON: {"test":"ok","status":"working"}', maxTokens: 100, responseMimeType: 'application/json' });
-      testResult.rawText = r.text;
-      testResult.ms = Date.now() - start;
-      testResult.model = r.model;
-
-      // Test actual quicksearch prompt → see raw Gemini response
-      const promptTest = `You are a local area assistant for India. The user is at coordinates lat=13.0100, lng=77.6600.
-
-Known nearby places from our platform:
-No local listings found nearby in our platform.
-
-User query: "restaurants shops hospitals pharmacies"
-
-Based on these coordinates (which are in India), generate a realistic JSON response of nearby places.
-Identify the likely Indian city/area from the coordinates and create plausible place names for that area.
-
-Return ONLY a valid JSON object (no markdown, no code fences, no explanation).
-Keys should be category names, values should be arrays of place objects.
-Each place object: { "name": string, "type": string, "description": string, "dist_km_estimate": number, "tip": string }
-
-Categories to include (only if relevant to the query, minimum 4 categories):
-restaurant, hospital, pharmacy, school, atm, bank, hotel, shop, temple, fuel
-
-Rules:
-- Generate 3-5 realistic places per category
-- Use authentic Indian business names
-- dist_km_estimate should be between 0.1 and 2.5
-- Make descriptions specific and helpful
-- Always return at least the categories: restaurant, shop, pharmacy, atm
-
-Return ONLY the JSON object.`;
-
-      const qsStart = Date.now();
-      const rawGemini = await callGemini({ prompt: promptTest, maxTokens: 2000, responseMimeType: 'application/json' });
-      testResult.qsRawLength = rawGemini.text?.length;
-      testResult.qsMs = Date.now() - qsStart;
-      const jsonMatch = rawGemini.text?.match(/\{[\s\S]*\}/);
-      testResult.qsJsonMatchFound = !!jsonMatch;
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[0]);
-          testResult.qsCategories = Object.keys(parsed).length;
-          testResult.qsTotal = Object.values(parsed).reduce((s: number, v: any) => s + (Array.isArray(v) ? v.length : 0), 0);
-          testResult.qsSample = Object.keys(parsed).slice(0, 5);
-        } catch (e: any) {
-          testResult.qsParseError = e.message;
-          // Show the area around the parse error
-          const errMatch = e.message.match(/position (\d+)/);
-          if (errMatch) {
-            const pos = parseInt(errMatch[1]);
-            testResult.qsErrorContext = jsonMatch[0].substring(Math.max(0, pos - 100), pos + 100);
-          }
-          // Try cleaning the JSON
-          try {
-            const cleaned = jsonMatch[0].replace(/[ --]/g, ' ');
-            const parsed2 = JSON.parse(cleaned);
-            testResult.qsCleanedCategories = Object.keys(parsed2).length;
-            testResult.qsCleanedTotal = Object.values(parsed2).reduce((s: number, v: any) => s + (Array.isArray(v) ? v.length : 0), 0);
-          } catch (e2: any) { testResult.qsCleanedError = e2.message; }
-        }
-      }
-    } else {
-      const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const client = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
-      const start = Date.now();
-      const msg = await client.messages.create({ model: 'claude-haiku-4-5-20251001', max_tokens: 100, messages: [{ role: 'user', content: 'Return this JSON: {"test":"ok"}' }] });
-      testResult.rawText = (msg.content[0] as any).text;
-      testResult.ms = Date.now() - start;
-    }
-
-    ok(res, testResult);
+    const { aiQuickSearch } = await import('./background.service');
+    const t = Date.now();
+    const qs = await aiQuickSearch(13.01, 77.66, 'restaurants shops hospitals pharmacies');
+    ok(res, {
+      provider: process.env.AI_PROVIDER || 'claude',
+      geminiKeySet: !!process.env.GEMINI_API_KEY,
+      qsCached: qs.cached,
+      qsCategories: Object.keys(qs.results).length,
+      qsTotal: Object.values(qs.results).reduce((s, a) => s + a.length, 0),
+      qsMs: Date.now() - t,
+      qsSample: Object.keys(qs.results).slice(0, 5),
+      qsFirstItem: Object.values(qs.results)[0]?.[0],
+    });
   } catch (err: any) {
-    ok(res, { error: err.message, stack: err.stack?.substring(0, 500), provider: process.env.AI_PROVIDER });
+    ok(res, { error: err.message, stack: err.stack?.substring(0, 500) });
   }
 });
 
-// ──────────────────────────────────────────────────────────────
-// GET /v1/public/quicksearch
+// GET /v1/public/quicksearch// GET /v1/public/quicksearch
 // Return cached nearby places grouped by category.
 // Falls back automatically: DB cache → Overpass → AI (stores result).
 // Query params: lat, lng, category? (optional filter), ai? (force AI), q? (query hint)
@@ -930,3 +860,4 @@ function buildMapsUrl(address?: string, city?: string, state?: string, pincode?:
   const q = encodeURIComponent(parts.join(', '));
   return `https://www.google.com/maps/search/?api=1&query=${q}`;
 }
+

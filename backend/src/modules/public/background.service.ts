@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Explore Background Services
  *
  * Service 1 (every 2 min): Scan active user_locations → query nearby
@@ -201,71 +201,25 @@ export async function cacheAIQuickSearch(lat: number, lng: number, aiData: Recor
 
 // ── Build AI prompt with location context ─────────────────────
 function buildAIPrompt(lat: number, lng: number, query: string, contextStr: string): string {
-  return `You are a local area assistant for India. The user is at coordinates lat=${lat.toFixed(4)}, lng=${lng.toFixed(4)}.
+  return `User location: lat=${lat.toFixed(4)}, lng=${lng.toFixed(4)}.
+Query: "${query}"
+Context: ${contextStr}
 
-Known nearby places from our platform:
-${contextStr}
+Return a JSON object of nearby places. Use 4 to 6 categories. Each category has 2 to 3 places.
+Place fields: name (string), type (string), dist_km (number between 0.1 and 2.5).
+Use real-sounding local business names appropriate for the location's city/country.
 
-User query: "${query}"
-
-Based on these coordinates (which are in India), generate a realistic JSON response of nearby places.
-Identify the likely Indian city/area from the coordinates and create plausible place names for that area.
-
-Return ONLY a valid JSON object (no markdown, no code fences, no explanation).
-Keys should be category names, values should be arrays of place objects.
-Each place object: { "name": string, "type": string, "description": string, "dist_km_estimate": number, "tip": string }
-
-Categories to include (only if relevant to the query, minimum 4 categories):
-restaurant, hospital, pharmacy, school, atm, bank, hotel, shop, temple, fuel
-
-Rules:
-- Generate 3-5 realistic places per category
-- Use authentic Indian business names (e.g. "Sri Venkateswara Medical Stores", "Hotel Saravana Bhavan")
-- dist_km_estimate should be between 0.1 and 2.5
-- Make descriptions specific and helpful
-- Always return at least the categories: restaurant, shop, pharmacy, atm
-
-Return ONLY the JSON object.`;
+Output ONLY valid JSON, no markdown, no extra text. Example format:
+{"restaurant":[{"name":"Green Leaf Cafe","type":"Vegetarian","dist_km":0.5}],"pharmacy":[{"name":"City Medical","type":"Pharmacy","dist_km":0.3}]}`;
 }
 
-// ── Robust JSON parser for AI responses ──────────────────────
+// -- Robust JSON parser for AI responses --
 function parseAIJson(text: string): Record<string, any[]> | null {
-  // Try direct parse first
-  try { return JSON.parse(text); } catch {}
-
-  // Fix common Gemini issues: trailing commas, smart quotes
-  const cleaned = text
-    .replace(/,(\s*[}\]])/g, '$1')         // trailing commas
-    .replace(/[‘’]/g, "'")        // smart single quotes → '
-    .replace(/[“”]/g, '"');       // smart double quotes → "
-
-  try { return JSON.parse(cleaned); } catch {}
-
-  // Find first complete JSON object by scanning for balanced braces
-  const start = text.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\' && inString) { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const candidate = text.slice(start, i + 1);
-        try { return JSON.parse(candidate.replace(/,(\s*[}\]])/g, '$1')); } catch {}
-        break;
-      }
-    }
-  }
-  return null;
+  try { return JSON.parse(text.trim()); } catch (_e1) {}
+  const m = text.match(/[{][\s\S]*[}]/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch (_e2) { return null; }
 }
-
 // ── AI Quick-Search (called on demand, with cache) ─────────────
 export async function aiQuickSearch(lat: number, lng: number, query: string): Promise<{
   cached: boolean;
@@ -598,3 +552,4 @@ export function startBackgroundServices() {
 
   logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min)');
 }
+
