@@ -9,5 +9,6 @@ export interface RegisterTenantCommand {
     email?: string;
     phone?: string;
     password: string;
+    source?: string;
   };
 }

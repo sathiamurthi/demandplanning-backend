@@ -9,7 +9,7 @@ const handler = new RegisterTenantCommandHandler();
 // POST /v1/ext/tenant/register
 interfaceRouter_Tenant.post("/register", async (req, res) => {
   try {
-    const { firstName, lastName, industry_id, companyName, email, phone, password } = req.body;
+    const { firstName, lastName, industry_id, companyName, email, phone, password, source } = req.body;
 
     if (!companyName || !industry_id || !password) {
       return res.status(400).json({ success: false, error: "companyName, industry_id, and password are required" });
@@ -24,7 +24,7 @@ interfaceRouter_Tenant.post("/register", async (req, res) => {
 
     const command: RegisterTenantCommand = {
       type: "tenant.register",
-      payload: { firstName, lastName, industry_id, companyName, email: emailNorm, phone: phoneNorm, password },
+      payload: { firstName, lastName, industry_id, companyName, email: emailNorm, phone: phoneNorm, password, source },
     };
 
     const tenant = await handler.execute(command);

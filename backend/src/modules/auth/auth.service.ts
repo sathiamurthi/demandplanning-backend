@@ -192,8 +192,13 @@ class RegisterCommandHandler {
 class GetMeQueryHandler {
   async execute(q: any) {
     const user = await queryOne<any>(
-      `SELECT id, email, role, tenant_id, store_id, first_name, last_name, created_at
-       FROM users WHERE id=$1`,
+      `SELECT u.id, u.email, u.phone, u.role, u.tenant_id, u.store_id, u.first_name, u.last_name, u.created_at,
+              t.name as tenant_name,
+              s.name as store_name
+       FROM users u
+       LEFT JOIN tenants t ON t.id = u.tenant_id
+       LEFT JOIN stores s ON s.id = u.store_id
+       WHERE u.id=$1`,
       [q.userId]
     );
 

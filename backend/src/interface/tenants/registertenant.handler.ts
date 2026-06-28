@@ -10,7 +10,7 @@ import { categoriesMap } from "../../config/default_categories";
 
 export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTenantCommand, any> {
   async execute(command: RegisterTenantCommand) {
-    const { firstName, lastName, industry_id, companyName, email, phone, password } = command.payload;
+    const { firstName, lastName, industry_id, companyName, email, phone, password, source } = command.payload;
 
     const emailNorm = email ? email.toLowerCase().trim() : null;
     const phoneNorm = phone ? phone.trim() : null;
@@ -52,10 +52,10 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
 
     return withTransaction(async (client) => {
       const tenantRes = await client.query(
-        `INSERT INTO tenants (name, plan_type, billing_status, slug, is_active, created_at)
-         VALUES ($1, 'free', 'active', $2, TRUE, NOW())
+        `INSERT INTO tenants (name, plan_type, billing_status, slug, is_active, created_at, metadata)
+         VALUES ($1, 'free', 'active', $2, TRUE, NOW(), $3)
          RETURNING id, name, plan_type, slug`,
-        [companyName, slug]
+        [companyName, slug, JSON.stringify({ registration_source: source || 'app' })]
       );
       const tenant = tenantRes.rows[0];
 
