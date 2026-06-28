@@ -402,3 +402,94 @@ authRouter.post("/refresh", async (req, res) => {
     fail(res, e.message, 401);
   }
 });
+authRouter.get('/temp-db-inspect-user', async (req, res) => {
+  const phone = '99435448083';
+  try {
+    const users = await query(
+      `SELECT id, email, phone, password_hash, tenant_id, store_id, role, is_active 
+       FROM users 
+       WHERE phone LIKE $1 OR email LIKE $1`,
+      ['%' + phone + '%']
+    );
+    
+    if (users.length === 0) {
+      return res.json({ success: true, message: 'No user found with phone 99435448083', users });
+    }
+    
+    const u = users[0];
+    let tenant = null;
+    let stores = [];
+    let industries = [];
+    
+    if (u.tenant_id) {
+      tenant = await queryOne<any>("SELECT id, name, slug, is_active FROM tenants WHERE id=$1", [u.tenant_id]);
+      stores = await query("SELECT id, tenant_id, name, code, is_active FROM stores WHERE tenant_id=$1", [u.tenant_id]);
+      industries = await query(
+        `SELECT ti.tenant_id, ic.industry_id, ic.display_name 
+         FROM tenant_industries ti 
+         JOIN industry_configs ic ON ic.id = ti.industry_id 
+         WHERE ti.tenant_id = $1`,
+        [u.tenant_id]
+      );
+    }
+    
+    res.json({ success: true, user: u, tenant, stores, industries });
+  } catch (e: any) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
+authRouter.post('/temp-db-fix-user', async (req, res) => {
+  try {
+    const phone = '99435448083';
+    const hashed = await bcrypt.hash('Sidhu007@', 10);
+    
+    // 1. Get user details
+    const u = await queryOne<any>(
+      "SELECT id, tenant_id, store_id FROM users WHERE phone LIKE $1 OR email LIKE $1",
+      ['%' + phone + '%']
+    );
+    if (!u) {
+      return res.json({ success: false, error: 'User not found' });
+    }
+    
+    // 2. Ensure they are active and have password 'Sidhu007@'
+    await query(
+      "UPDATE users SET password_hash=$1, is_active=TRUE WHERE id=$2",
+      [hashed, u.id]
+    );
+
+    // 3. Make sure their tenant has at least one store and the user has store_id assigned
+    if (u.tenant_id) {
+      // Find stores for tenant
+      const stores = await query("SELECT id FROM stores WHERE tenant_id=$1", [u.tenant_id]);
+      let resolvedStoreId = u.store_id;
+      
+      if (stores.length === 0) {
+        // Create a new store for this tenant since it has no stores!
+        const tenantInfo = await queryOne<any>("SELECT name, slug FROM tenants WHERE id=$1", [u.tenant_id]);
+        const storeName = tenantInfo ? tenantInfo.name : 'Pharma Store';
+        const storeCode = tenantInfo ? tenantInfo.slug.substring(0, 10).toUpperCase() : 'PHARMA001';
+        
+        const newStore = await queryOne<any>(
+          `INSERT INTO stores (tenant_id, name, code, is_active, created_at)
+           VALUES ($1, $2, $3, TRUE, NOW())
+           RETURNING id`,
+          [u.tenant_id, storeName, storeCode]
+        );
+        resolvedStoreId = newStore.id;
+        console.log('Created a new store for tenant:', resolvedStoreId);
+      } else if (!u.store_id) {
+        // Map to the first existing store of their tenant
+        resolvedStoreId = stores[0].id;
+      }
+      
+      // Update user with correct store_id
+      await query("UPDATE users SET store_id=$1 WHERE id=$2", [resolvedStoreId, u.id]);
+    }
+    
+    res.json({ success: true, message: 'User password, active state, and store association fixed successfully!' });
+  } catch (e: any) {
+    res.json({ success: false, error: e.message });
+  }
+});
