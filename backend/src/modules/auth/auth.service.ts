@@ -403,34 +403,6 @@ authRouter.post("/refresh", async (req, res) => {
   }
 });
 
-authRouter.get('/temp-db-status', async (req, res) => {
-  try {
-    const targetTenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
-    
-    // Perform update
-    await query(
-      "UPDATE tenants SET industry_id = 'pharma' WHERE id = $1",
-      [targetTenantId]
-    );
 
-    const tenantDetails = await query(
-      "SELECT id, name, slug, industry_id, is_active FROM tenants WHERE id = $1",
-      [targetTenantId]
-    );
-
-    const tenantIndustries = await query(
-      "SELECT * FROM tenant_industries WHERE tenant_id = $1",
-      [targetTenantId]
-    );
-
-    res.json({
-      success: true,
-      tenantDetails,
-      tenantIndustries,
-    });
-  } catch (e: any) {
-    res.json({ success: false, error: e.message });
-  }
-});
 
 
