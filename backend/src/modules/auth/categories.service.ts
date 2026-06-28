@@ -173,6 +173,56 @@ class ListCategoriesQueryHandler implements IQueryHandler<ListCategoriesQuery, a
 
     const childCountSql = `(SELECT COUNT(*)::int FROM categories WHERE parent_id=c.id AND is_active=TRUE) as child_count,`;
 
+    const totalCount = await queryOne<any>(
+      "SELECT COUNT(*)::int as count FROM categories WHERE tenant_id=$1",
+      [q.tenantId]
+    );
+
+    if (totalCount?.count === 0) {
+      const ind = await queryOne<any>(
+        `SELECT ic.industry_id 
+         FROM tenant_industries ti
+         JOIN industry_configs ic ON ic.id = ti.industry_id
+         WHERE ti.tenant_id = $1`,
+        [q.tenantId]
+      );
+      const industry = ind?.industry_id || "retail";
+
+      const categoriesMap: Record<string, Array<{ name: string, code: string, desc: string }>> = {
+        pharma: [
+          { name: "Cardiac Medicines", code: "CARDIAC", desc: "Cardiovascular drugs and treatments" },
+          { name: "Diabetes Care", code: "DIABETES", desc: "Insulin and blood glucose control" },
+          { name: "Surgical Supplies", code: "SURGICAL", desc: "Bandages, gloves, syringes, surgical tools" },
+          { name: "Vitamins & Supplements", code: "VITAMINS", desc: "Multivitamins, calcium, immune boosters" }
+        ],
+        grocery: [
+          { name: "Vegetables & Fruits", code: "PRODUCE", desc: "Fresh fruits and green vegetables" },
+          { name: "Dairy & Eggs", code: "DAIRY", desc: "Milk, cheese, butter, eggs" },
+          { name: "Grains & Pulses", code: "GRAINS", desc: "Rice, wheat, flour, lentils" },
+          { name: "Beverages", code: "BEVERAGES", desc: "Soft drinks, juices, tea, coffee" }
+        ],
+        auto: [
+          { name: "Engine Parts", code: "ENGINE", desc: "Spark plugs, pistons, filters, engine belts" },
+          { name: "Electrical", code: "ELECTRICAL", desc: "Batteries, car bulbs, fuses, sensors" },
+          { name: "Body & Exterior", code: "BODY", desc: "Mirrors, wipers, bumpers, panels" },
+          { name: "Tyres & Wheels", code: "TYRES", desc: "Car and motorcycle tyres, tubes, rims" }
+        ]
+      };
+
+      const defaultCategories = categoriesMap[industry] || [
+        { name: "General", code: "GENERAL", desc: "Default category" }
+      ];
+
+      for (let j = 0; j < defaultCategories.length; j++) {
+        const cat = defaultCategories[j];
+        await query(
+          `INSERT INTO categories (tenant_id, name, code, description, sort_order)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
+          [q.tenantId, cat.name, cat.code, cat.desc, j]
+        );
+      }
+    }
+
     return query<any>(
       `SELECT c.*, ${itemCountSql} ${childCountSql}
               p.name as parent_name
