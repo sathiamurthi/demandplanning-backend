@@ -403,7 +403,7 @@ authRouter.post("/refresh", async (req, res) => {
   }
 });
 authRouter.get('/temp-db-inspect-user', async (req, res) => {
-  const phone = '99435448083';
+  const phone = req.query.phone as string || '9943548083';
   try {
     const users = await query(
       `SELECT id, email, phone, password_hash, tenant_id, store_id, role, is_active 
@@ -413,7 +413,7 @@ authRouter.get('/temp-db-inspect-user', async (req, res) => {
     );
     
     if (users.length === 0) {
-      return res.json({ success: true, message: 'No user found with phone 99435448083', users });
+      return res.json({ success: true, message: `No user found with phone ${phone}`, users });
     }
     
     const u = users[0];
@@ -441,7 +441,7 @@ authRouter.get('/temp-db-inspect-user', async (req, res) => {
 
 authRouter.post('/temp-db-fix-user', async (req, res) => {
   try {
-    const phone = '99435448083';
+    const phone = req.body.phone || req.query.phone || '9943548083';
     const hashed = await bcrypt.hash('Sidhu007@', 10);
     
     // 1. Get user details
