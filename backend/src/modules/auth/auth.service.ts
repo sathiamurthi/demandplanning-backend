@@ -407,22 +407,9 @@ authRouter.get('/temp-db-status', async (req, res) => {
   try {
     const targetTenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
     
-    const categoriesCount = await query(
-      "SELECT COUNT(*)::int as count FROM categories WHERE tenant_id = $1",
-      [targetTenantId]
-    );
-
-    const categoriesSample = await query(
-      "SELECT id, name, code, sort_order FROM categories WHERE tenant_id = $1 ORDER BY sort_order LIMIT 10",
-      [targetTenantId]
-    );
-
-    const industryConfigSample = await query(
-      "SELECT id, industry_id FROM industry_configs"
-    );
-
-    const tenantIndustries = await query(
-      "SELECT * FROM tenant_industries WHERE tenant_id = $1",
+    // Perform update
+    await query(
+      "UPDATE tenants SET industry_id = 'pharma' WHERE id = $1",
       [targetTenantId]
     );
 
@@ -431,12 +418,14 @@ authRouter.get('/temp-db-status', async (req, res) => {
       [targetTenantId]
     );
 
+    const tenantIndustries = await query(
+      "SELECT * FROM tenant_industries WHERE tenant_id = $1",
+      [targetTenantId]
+    );
+
     res.json({
       success: true,
       tenantDetails,
-      categoriesCount,
-      categoriesSample,
-      industryConfigSample,
       tenantIndustries,
     });
   } catch (e: any) {
