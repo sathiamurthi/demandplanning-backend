@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Explore Background Services
  *
  * Service 1 (every 2 min): Scan active user_locations → query nearby
@@ -199,18 +199,20 @@ export async function cacheAIQuickSearch(lat: number, lng: number, aiData: Recor
   MEM_CACHE.delete(memKey(latG, lngG));
 }
 
-// ── Build AI prompt with location context ─────────────────────
 function buildAIPrompt(lat: number, lng: number, query: string, contextStr: string): string {
   return `User location: lat=${lat.toFixed(4)}, lng=${lng.toFixed(4)}.
-Query: "${query}"
-Context: ${contextStr}
+Search Query: "${query}"
+Context of existing nearby places: ${contextStr}
 
-Return a JSON object of nearby places. Use 4 to 6 categories. Each category has 2 to 3 places.
-Place fields: name (string), type (string), dist_km (number between 0.1 and 2.5).
+Return a JSON object of nearby places matching the Search Query.
+If the query is specific (e.g. "bar", "pizza", "dentist"), return categories and places relevant to that query (e.g. {"bar": [{"name": "The Irish Pub", "type": "Pub", "dist_km": 0.4}]}).
+Otherwise, use general categories like restaurants, shops, hotels, hospitals, pharmacies.
+Use 1 to 4 relevant categories. Each category has 2 to 4 places.
+Place fields: name (string), type (string), dist_km (number between 0.1 and 2.5), description (short description), tip (a tip or recommendation).
 Use real-sounding local business names appropriate for the location's city/country.
 
 Output ONLY valid JSON, no markdown, no extra text. Example format:
-{"restaurant":[{"name":"Green Leaf Cafe","type":"Vegetarian","dist_km":0.5}],"pharmacy":[{"name":"City Medical","type":"Pharmacy","dist_km":0.3}]}`;
+{"bar":[{"name":"Club 21","type":"Bar & Lounge","dist_km":0.5,"description":"Cozy pub with craft beers","tip":"Try the signature cocktails"}]}`;
 }
 
 // -- Robust JSON parser for AI responses --
@@ -228,19 +230,25 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
   const latG = toGrid(lat);
   const lngG = toGrid(lng);
 
-  // 1. In-memory check
-  const mem = memGet(latG, lngG);
-  if (mem && Object.keys(mem).length > 0) {
-    return { cached: true, results: mem };
+  const queryLower = query.toLowerCase();
+  const isGeneric = ['restaurants', 'shops', 'hospitals', 'pharmacies', 'schools', 'banks', 'atm', 'temples', 'hotels', 'nearby'].some(x => queryLower.includes(x));
+
+  if (isGeneric) {
+    // 1. In-memory check
+    const mem = memGet(latG, lngG);
+    if (mem && Object.keys(mem).length > 0) {
+      return { cached: true, results: mem };
+    }
+
+    // 2. DB cache check
+    const cached = await getCachedQuickSearch(lat, lng);
+    if (cached.hit && cached.aiEnriched && Object.keys(cached.data).length > 0) {
+      return { cached: true, results: cached.data };
+    }
   }
 
-  // 2. DB cache check
-  const cached = await getCachedQuickSearch(lat, lng);
-  if (cached.hit && cached.aiEnriched && Object.keys(cached.data).length > 0) {
-    return { cached: true, results: cached.data };
-  }
-
-  const dbResults = cached.hit ? cached.data : {};
+  const cachedResult = await getCachedQuickSearch(lat, lng);
+  const dbResults = cachedResult.hit ? cachedResult.data : {};
 
   // 3. Call AI
   try {

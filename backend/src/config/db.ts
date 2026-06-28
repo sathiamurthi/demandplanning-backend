@@ -606,6 +606,8 @@ function getMigrations() {
           season_flag VARCHAR(50),
           is_seasonal BOOLEAN DEFAULT FALSE,
           monthly_usage_avg DECIMAL(18,4) DEFAULT 0,
+          discount_type VARCHAR(50) DEFAULT 'none',
+          discount_value DECIMAL(10,2) DEFAULT 0,
           is_active BOOLEAN DEFAULT TRUE,
           created_at TIMESTAMPTZ DEFAULT NOW(),
           updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -2143,6 +2145,27 @@ END $$;
       END LOOP;
     END $$;
   `
-},
+    },
+    {
+      name: '054_discount_and_whatsapp_subscription',
+      sql: `
+        -- Add discount columns to items if they do not exist
+        ALTER TABLE items ADD COLUMN IF NOT EXISTS discount_type VARCHAR(50) DEFAULT 'none';
+        ALTER TABLE items ADD COLUMN IF NOT EXISTS discount_value DECIMAL(10,2) DEFAULT 0;
+
+        -- Create whatsapp_subscriptions table
+        CREATE TABLE IF NOT EXISTS whatsapp_subscriptions (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          phone VARCHAR(30) NOT NULL UNIQUE,
+          verification_code VARCHAR(10),
+          code_expires_at TIMESTAMPTZ,
+          is_verified BOOLEAN DEFAULT FALSE,
+          guest_id VARCHAR(50),
+          user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+      `
+    },
   ];
 }

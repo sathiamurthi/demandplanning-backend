@@ -17,6 +17,42 @@ function fail(res: any, msg: string, status = 400) {
   res.status(status).json({ success: false, error: msg, timestamp: new Date().toISOString() });
 }
 
+async function broadcastOffer(item: any, tenantId: string, storeId: string) {
+  try {
+    const store = await queryOne<any>('SELECT name FROM stores WHERE id=$1', [storeId]);
+    const storeName = store?.name || 'our store';
+    
+    // Fetch verified whatsapp subscribers
+    const subscribers = await query<any>('SELECT phone FROM whatsapp_subscriptions WHERE is_verified=TRUE');
+    if (!subscribers || subscribers.length === 0) return;
+    
+    const discLabel = item.discount_type === 'percentage' 
+      ? `${parseFloat(item.discount_value)}% Off` 
+      : `Flat ₹${parseFloat(item.discount_value)} Off`;
+      
+    const message = [
+      `🎉 *New Offer Alert from ${storeName}!* 🎉`,
+      ``,
+      `Supercharge your shopping with our latest deal:`,
+      `🏷️ *Product:* ${item.name}`,
+      `💰 *Deal:* ${discLabel}`,
+      `💵 *Offer Price:* ₹${parseFloat(item.selling_price)}`,
+      `📦 *Batch:* ${item.batch_number || 'N/A'}`,
+      ``,
+      `Hurry up! Stock is limited (${parseFloat(item.current_stock)} remaining).`,
+      `Reply to this chat to order now!`,
+    ].join('\n');
+
+    const { sendWhatsAppText } = await import('../../utils/whatsapp');
+    for (const sub of subscribers) {
+      await sendWhatsAppText(sub.phone, message);
+    }
+    console.log(`[WA Broadcast] Sent offer notification to ${subscribers.length} subscribers.`);
+  } catch (e: any) {
+    console.error('[WA Broadcast] Failed:', e.message);
+  }
+}
+
 // ── Commands ─────────────────────────────────────────────────
 
 interface CreateItemCommand extends ICommand {
@@ -29,6 +65,7 @@ interface CreateItemCommand extends ICommand {
   unitsPerSecondary?: number; purchasePrice?: number; sellingPrice?: number;
   mrp?: number; gstRate?: number; expiryDate?: string; batchNumber?: string;
   seasonFlag?: string; isSeasonal?: boolean; createdBy: string;
+  discountType?: string; discountValue?: number;
 }
 class CreateItemCommandHandler implements ICommandHandler<CreateItemCommand> {
   async execute(cmd: CreateItemCommand) {
@@ -53,20 +90,21 @@ class CreateItemCommandHandler implements ICommandHandler<CreateItemCommand> {
       primaryUnitId = unit?.id;
     }
 
-    return withTransaction(async (client) => {
+    const item = await withTransaction(async (client) => {
       const [item] = await client.query(
         `INSERT INTO items (store_id,tenant_id,name,sku,barcode,brand,description,category_id,supplier_id,
           current_stock,reorder_level,max_stock_level,lead_time_days,primary_unit_id,secondary_unit_id,
           units_per_secondary,purchase_price,selling_price,mrp,gst_rate,expiry_date,manufacture_date,batch_number,
-          season_flag,is_seasonal)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+          season_flag,is_seasonal,discount_type,discount_value)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
          RETURNING *`,
         [cmd.storeId,cmd.tenantId,cmd.name,cmd.sku||null,cmd.barcode||null,cmd.brand||null,
          cmd.description||null,cmd.categoryId||null,cmd.supplierId||null,
          cmd.currentStock,cmd.reorderLevel,cmd.maxStockLevel||null,cmd.leadTimeDays||4,
          primaryUnitId||null,cmd.secondaryUnitId||null,cmd.unitsPerSecondary||null,
          cmd.purchasePrice||null,cmd.sellingPrice||null,cmd.mrp||null,cmd.gstRate||0,
-         cmd.expiryDate||null,cmd.manufactureDate||null,cmd.batchNumber||null,cmd.seasonFlag||null,cmd.isSeasonal||false]
+         cmd.expiryDate||null,cmd.manufactureDate||null,cmd.batchNumber||null,cmd.seasonFlag||null,cmd.isSeasonal||false,
+         cmd.discountType||'none',cmd.discountValue||0]
       ).then(r=>r.rows);
 
       // Opening stock ledger entry
@@ -90,6 +128,14 @@ class CreateItemCommandHandler implements ICommandHandler<CreateItemCommand> {
 
       return item;
     });
+
+    if (item && item.discount_type && item.discount_type !== 'none' && parseFloat(item.discount_value) > 0) {
+      broadcastOffer(item, cmd.tenantId, cmd.storeId).catch(err => {
+        console.error('[WA Broadcast] error:', err.message);
+      });
+    }
+
+    return item;
   }
 }
 
@@ -103,13 +149,15 @@ interface UpdateItemCommand extends ICommand {
   seasonFlag?: string; isSeasonal?: boolean; isActive?: boolean;
   stockAdjustment?: { qty: number; reason: string; type: 'add'|'subtract'|'set' };
   updatedBy: string;
+  discountType?: string;
+  discountValue?: number;
 }
 class UpdateItemCommandHandler implements ICommandHandler<UpdateItemCommand> {
   async execute(cmd: UpdateItemCommand) {
     const existing = await queryOne<any>('SELECT * FROM items WHERE id=$1 AND store_id=$2 AND tenant_id=$3',[cmd.itemId,cmd.storeId,cmd.tenantId]);
     if (!existing) throw new Error('Item not found');
 
-    return withTransaction(async (client) => {
+    const item = await withTransaction(async (client) => {
       const sets: string[] = []; const vals: any[] = []; let i = 1;
       if (cmd.name !== undefined)         { sets.push(`name=$${i++}`);          vals.push(cmd.name); }
       if (cmd.sku !== undefined)          { sets.push(`sku=$${i++}`);           vals.push(cmd.sku); }
@@ -127,6 +175,8 @@ class UpdateItemCommandHandler implements ICommandHandler<UpdateItemCommand> {
       if (cmd.batchNumber !== undefined)   { sets.push(`batch_number=$${i++}`);   vals.push(cmd.batchNumber); }
       if (cmd.isSeasonal !== undefined)   { sets.push(`is_seasonal=$${i++}`);   vals.push(cmd.isSeasonal); }
       if (cmd.isActive !== undefined)     { sets.push(`is_active=$${i++}`);     vals.push(cmd.isActive); }
+      if (cmd.discountType !== undefined)  { sets.push(`discount_type=$${i++}`); vals.push(cmd.discountType); }
+      if (cmd.discountValue !== undefined) { sets.push(`discount_value=$${i++}`);vals.push(cmd.discountValue); }
 
       // Stock adjustment
       let newStock = existing.current_stock;
@@ -152,6 +202,16 @@ class UpdateItemCommandHandler implements ICommandHandler<UpdateItemCommand> {
       ).then(r=>r.rows);
       return item;
     });
+
+    const wasOffer = existing.discount_type !== 'none' && parseFloat(existing.discount_value) > 0;
+    const isOffer = item.discount_type !== 'none' && parseFloat(item.discount_value) > 0;
+    if (isOffer && (!wasOffer || existing.discount_value !== item.discount_value || existing.discount_type !== item.discount_type)) {
+      broadcastOffer(item, cmd.tenantId, cmd.storeId).catch(err => {
+        console.error('[WA Broadcast] error:', err.message);
+      });
+    }
+
+    return item;
   }
 }
 
@@ -349,7 +409,9 @@ export const ItemCreateSchema = z.object({
   batchNumber: z.string().nullish(),
 
   seasonFlag: z.string().nullish(),
-  isSeasonal: z.boolean().optional().default(false)
+  isSeasonal: z.boolean().optional().default(false),
+  discountType: z.string().optional().default('none'),
+  discountValue: z.number().min(0).optional().default(0)
 });
 itemRouter.get('/:itemId/ledger', async (req, res) => {
   try {
@@ -447,6 +509,8 @@ const QuickCreateSchema = z.object({
   sku: z.string().optional(),
   sellingPrice: z.number().min(0).optional().default(0),
   currentStock: z.number().min(0).optional().default(0),
+  discountType: z.string().optional().default('none'),
+  discountValue: z.number().min(0).optional().default(0),
 });
 
 itemRouter.post('/quick', requireMinRole('staff'), async (req, res) => {
@@ -463,6 +527,8 @@ itemRouter.post('/quick', requireMinRole('staff'), async (req, res) => {
       currentStock: body.currentStock ?? 0,
       reorderLevel: 5,
       sellingPrice: body.sellingPrice ?? 0,
+      discountType: body.discountType,
+      discountValue: body.discountValue,
     });
     ok(res, r, 201);
   } catch (e: any) { fail(res, e.message); }

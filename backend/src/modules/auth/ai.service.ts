@@ -601,7 +601,7 @@ aiRouter.post('/generate', requireMinRole('manager'), async (req, res) => {
     const store = await queryOne<any>(
       `SELECT s.*, ic.industry_id AS industry_id, ic.id AS industry_uuid
        FROM stores s
-       LEFT JOIN tenant_industry ti ON ti.tenant_id = s.tenant_id
+       LEFT JOIN tenant_industries ti ON ti.tenant_id = s.tenant_id
        LEFT JOIN industry_configs ic ON ic.id = ti.industry_id
        WHERE s.id = $1 AND s.tenant_id = $2`,
       [req.params.storeId, user.tenantId]
@@ -678,7 +678,7 @@ aiRouter.post('/suggest', async (req, res) => {
     const store = await queryOne<any>(
       `SELECT s.*, ic.item_noun, ic.prompt_context, ic.industry_id AS industry_slug
        FROM stores s
-       LEFT JOIN tenant_industry ti ON ti.tenant_id = s.tenant_id
+       LEFT JOIN tenant_industries ti ON ti.tenant_id = s.tenant_id
        LEFT JOIN industry_configs ic ON ic.id = ti.industry_id
        WHERE s.id = $1 AND s.tenant_id = $2`,
       [storeId, user.tenantId]
@@ -789,9 +789,9 @@ aiSettingsRouter.get('/', async (req, res) => {
       `SELECT t.plan_type, t.name AS tenant_name, t.billing_status,
               bp.ai_reports_per_month, bp.whatsapp_alerts, bp.api_access, bp.custom_industry,
               COALESCE(tu.ai_reports_used, 0)::int AS reports_used,
-              (SELECT COUNT(*)::int FROM tenant_industry WHERE tenant_id = t.id) AS industry_count,
+              (SELECT COUNT(*)::int FROM tenant_industries WHERE tenant_id = t.id) AS industry_count,
               (SELECT json_agg(json_build_object('slug', ic.industry_id, 'label', ic.display_name))
-               FROM tenant_industry ti2
+               FROM tenant_industries ti2
                JOIN industry_configs ic ON ic.id = ti2.industry_id
                WHERE ti2.tenant_id = t.id) AS industries
        FROM tenants t
@@ -846,7 +846,7 @@ aiRouter.get('/search', async (req, res) => {
     const store = await queryOne<any>(
       `SELECT s.*, ic.industry_id AS industry_id
        FROM stores s
-       LEFT JOIN tenant_industry ti ON ti.tenant_id = s.tenant_id
+       LEFT JOIN tenant_industries ti ON ti.tenant_id = s.tenant_id
        LEFT JOIN industry_configs ic ON ic.id = ti.industry_id
        WHERE s.id = $1`,
       [storeId]
