@@ -405,19 +405,32 @@ authRouter.post("/refresh", async (req, res) => {
 
 authRouter.get('/temp-db-status', async (req, res) => {
   try {
-    const users = await query(
-      "SELECT id, phone, email, tenant_id, store_id, first_name, last_name, role, is_active FROM users WHERE phone LIKE '%994354%' OR email LIKE '%dnmsathia%' OR email LIKE '%user_1782578418250%'"
+    const targetTenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
+    
+    const rawStores = await query(
+      "SELECT * FROM stores WHERE tenant_id = $1",
+      [targetTenantId]
     );
 
-    const tenants = await query(
-      "SELECT id, name, slug, industry_id, is_active FROM tenants"
+    const fullStoreListQuery = await query(
+      `SELECT s.*,
+              COUNT(DISTINCT i.id)::int as item_count,
+              COUNT(DISTINCT u.id)::int as user_count,
+              COALESCE(SUM(sa.total_amount),0) as month_sales
+       FROM stores s
+       LEFT JOIN items i ON i.store_id=s.id AND i.is_active=TRUE
+       LEFT JOIN users u ON u.store_id=s.id AND u.is_active=TRUE
+       LEFT JOIN sales sa ON sa.store_id=s.id AND sa.sale_date >= DATE_TRUNC('month',NOW())
+       WHERE s.tenant_id=$1 AND s.is_active=TRUE
+       GROUP BY s.id ORDER BY s.created_at`,
+      [targetTenantId]
     );
 
-    const stores = await query(
-      "SELECT id, tenant_id, name, code, is_active FROM stores"
-    );
-
-    res.json({ success: true, users, tenants, stores });
+    res.json({
+      success: true,
+      rawStores,
+      fullStoreListQuery,
+    });
   } catch (e: any) {
     res.json({ success: false, error: e.message });
   }
