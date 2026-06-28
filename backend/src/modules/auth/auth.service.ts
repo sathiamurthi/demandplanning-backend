@@ -407,29 +407,37 @@ authRouter.get('/temp-db-status', async (req, res) => {
   try {
     const targetTenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
     
-    const rawStores = await query(
-      "SELECT * FROM stores WHERE tenant_id = $1",
+    const categoriesCount = await query(
+      "SELECT COUNT(*)::int as count FROM categories WHERE tenant_id = $1",
       [targetTenantId]
     );
 
-    const fullStoreListQuery = await query(
-      `SELECT s.*,
-              COUNT(DISTINCT i.id)::int as item_count,
-              COUNT(DISTINCT u.id)::int as user_count,
-              COALESCE(SUM(sa.total_amount),0) as month_sales
-       FROM stores s
-       LEFT JOIN items i ON i.store_id=s.id AND i.is_active=TRUE
-       LEFT JOIN users u ON u.store_id=s.id AND u.is_active=TRUE
-       LEFT JOIN sales sa ON sa.store_id=s.id AND sa.sale_date >= DATE_TRUNC('month',NOW())
-       WHERE s.tenant_id=$1 AND s.is_active=TRUE
-       GROUP BY s.id ORDER BY s.created_at`,
+    const categoriesSample = await query(
+      "SELECT id, name, code, sort_order FROM categories WHERE tenant_id = $1 ORDER BY sort_order LIMIT 10",
+      [targetTenantId]
+    );
+
+    const industryConfigSample = await query(
+      "SELECT id, industry_id FROM industry_configs"
+    );
+
+    const tenantIndustries = await query(
+      "SELECT * FROM tenant_industries WHERE tenant_id = $1",
+      [targetTenantId]
+    );
+
+    const tenantDetails = await query(
+      "SELECT id, name, slug, industry_id, is_active FROM tenants WHERE id = $1",
       [targetTenantId]
     );
 
     res.json({
       success: true,
-      rawStores,
-      fullStoreListQuery,
+      tenantDetails,
+      categoriesCount,
+      categoriesSample,
+      industryConfigSample,
+      tenantIndustries,
     });
   } catch (e: any) {
     res.json({ success: false, error: e.message });
