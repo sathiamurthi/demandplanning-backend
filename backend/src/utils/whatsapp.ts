@@ -79,7 +79,7 @@ export async function sendRegistrationWhatsApp(
   planType?: string
 ): Promise<WhatsAppSendResult> {
   const name = firstName || 'there';
-  const frontendUrl = (process.env.FRONTEND_URL || 'https://demandgenius.vercel.app').split(',')[0];
+  const frontendUrl = (process.env.PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://demandgenius.vercel.app').split(',')[0];
   const plan = (planType || 'free').charAt(0).toUpperCase() + (planType || 'free').slice(1);
   const business = companyName ? companyName : 'your business';
 
@@ -102,7 +102,7 @@ export async function sendPasswordResetWhatsApp(
   phone: string,
   resetToken: string
 ): Promise<WhatsAppSendResult> {
-  const frontendUrl = (process.env.FRONTEND_URL || 'https://demandgenius.vercel.app').split(',')[0];
+  const frontendUrl = (process.env.PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://demandgenius.vercel.app').split(',')[0];
   const link = `${frontendUrl}/reset-password?token=${resetToken}`;
 
   return sendWhatsAppText(

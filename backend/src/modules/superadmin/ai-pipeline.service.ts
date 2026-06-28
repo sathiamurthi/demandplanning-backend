@@ -10,6 +10,7 @@
 import { query as dbQuery } from '../../config/db';
 import { logger } from '../../config/logger';
 import Anthropic from '@anthropic-ai/sdk';
+import { callGemini } from '../auth/gemini.service';
 
 const MODEL = 'claude-haiku-4-5-20251001';
 
@@ -58,7 +59,7 @@ export async function logAIUsage(params: {
   }
 }
 
-// ── Claude helper: call + log + return parsed JSON ────────────
+// ── AI helper: call + log + return parsed JSON (supports Claude and Gemini) ──
 async function callClaude(
   prompt: string,
   agentName: string,
@@ -66,45 +67,95 @@ async function callClaude(
   tenantId: string,
   fallback: any
 ): Promise<any> {
-  const client = mkClient();
   const t0 = Date.now();
-  try {
-    const msg = await client.messages.create({
-      model: MODEL,
-      max_tokens: 700,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const ms = Date.now() - t0;
-    await logAIUsage({
-      feature: 'pipeline',
-      agentName,
-      pipelineRunId,
-      model: MODEL,
-      promptTokens: msg.usage.input_tokens,
-      completionTokens: msg.usage.output_tokens,
-      latencyMs: ms,
-      status: 'success',
-      tenantId,
-    });
-    const text = (msg.content[0] as any).text ?? '{}';
-    const match = text.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : fallback;
-  } catch (err: any) {
-    await logAIUsage({
-      feature: 'pipeline',
-      agentName,
-      pipelineRunId,
-      model: MODEL,
-      promptTokens: 0,
-      completionTokens: 0,
-      latencyMs: Date.now() - t0,
-      status: 'error',
-      errorMsg: err.message,
-      tenantId,
-    });
-    logger.warn(`[Pipeline:${agentName}] Claude call failed: ${err.message}`);
-    return fallback;
+  let modelUsed = MODEL;
+  let text = '';
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  if (process.env.AI_PROVIDER === 'gemini') {
+    try {
+      const geminiRes = await callGemini({
+        prompt: prompt,
+        maxTokens: 700,
+        responseMimeType: 'application/json',
+      });
+      modelUsed = geminiRes.model;
+      text = geminiRes.text;
+      promptTokens = geminiRes.inputTokens;
+      completionTokens = geminiRes.outputTokens;
+      const ms = Date.now() - t0;
+      await logAIUsage({
+        feature: 'pipeline',
+        agentName,
+        pipelineRunId,
+        model: modelUsed,
+        promptTokens,
+        completionTokens,
+        latencyMs: ms,
+        status: 'success',
+        tenantId,
+      });
+    } catch (err: any) {
+      await logAIUsage({
+        feature: 'pipeline',
+        agentName,
+        pipelineRunId,
+        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+        promptTokens: 0,
+        completionTokens: 0,
+        latencyMs: Date.now() - t0,
+        status: 'error',
+        errorMsg: err.message,
+        tenantId,
+      });
+      logger.warn(`[Pipeline:${agentName}] Gemini call failed: ${err.message}`);
+      return fallback;
+    }
+  } else {
+    const client = mkClient();
+    try {
+      const msg = await client.messages.create({
+        model: MODEL,
+        max_tokens: 700,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      modelUsed = MODEL;
+      text = (msg.content[0] as any).text ?? '{}';
+      promptTokens = msg.usage.input_tokens;
+      completionTokens = msg.usage.output_tokens;
+      const ms = Date.now() - t0;
+      await logAIUsage({
+        feature: 'pipeline',
+        agentName,
+        pipelineRunId,
+        model: modelUsed,
+        promptTokens,
+        completionTokens,
+        latencyMs: ms,
+        status: 'success',
+        tenantId,
+      });
+    } catch (err: any) {
+      await logAIUsage({
+        feature: 'pipeline',
+        agentName,
+        pipelineRunId,
+        model: MODEL,
+        promptTokens: 0,
+        completionTokens: 0,
+        latencyMs: Date.now() - t0,
+        status: 'error',
+        errorMsg: err.message,
+        tenantId,
+      });
+      logger.warn(`[Pipeline:${agentName}] Claude call failed: ${err.message}`);
+      return fallback;
+    }
   }
+
+  const match = text.match(/\{[\s\S]*\}/);
+  return match ? JSON.parse(match[0]) : fallback;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

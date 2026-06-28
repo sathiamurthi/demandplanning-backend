@@ -9,6 +9,7 @@ import { queryBus, IQuery, IQueryHandler } from '../../cqrs/queryBus';
 import { authMiddleware } from '../auth/auth.service';
 import { requireRole, requireMinRole } from '../../core/guards/roleGuard';
 import Anthropic from '@anthropic-ai/sdk';
+import { callGemini } from './gemini.service';
 
 // ─────────────────────────────────────────────────────────────
 // COMMON RESPONSE
@@ -150,7 +151,7 @@ class GenerateReportCommandHandler
   implements ICommandHandler<GenerateReportCommand, any>
 {
   private anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY!,
+    apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || 'dummy_key',
   });
 
   async execute(cmd: GenerateReportCommand) {
@@ -162,16 +163,26 @@ class GenerateReportCommandHandler
     );
 
     const prompt = `Forecast demand: ${JSON.stringify(items)}`;
+    let responseText = '';
 
-    const msg = await this.anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
-      messages: [{ role: 'user', content: prompt }],
-    });
+    if (process.env.AI_PROVIDER === 'gemini') {
+      const geminiRes = await callGemini({
+        prompt: prompt,
+        maxTokens: 500,
+      });
+      responseText = geminiRes.text;
+    } else {
+      const msg = await this.anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 500,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      responseText = (msg.content[0] as any).text;
+    }
 
     return {
       email: cleanEmail,
-      response: (msg.content[0] as any).text,
+      response: responseText,
     };
   }
 }

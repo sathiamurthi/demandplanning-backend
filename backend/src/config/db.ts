@@ -2121,5 +2121,28 @@ END $$;
     CREATE INDEX IF NOT EXISTS idx_pipeline_started ON ai_pipeline_runs(started_at DESC);
   `
 },
+{
+  name: '053_fill_default_categories',
+  sql: `
+    DO $$
+    DECLARE
+      t_record RECORD;
+    BEGIN
+      FOR t_record IN SELECT id FROM tenants LOOP
+        INSERT INTO categories (id, tenant_id, name, code, description)
+        VALUES (uuid_generate_v4(), t_record.id, 'Pharma', 'PHARMA', 'Pharmaceutical & medicines')
+        ON CONFLICT (tenant_id, name) DO NOTHING;
+
+        INSERT INTO categories (id, tenant_id, name, code, description)
+        VALUES (uuid_generate_v4(), t_record.id, 'Groceries', 'GROCERY', 'General groceries & food items')
+        ON CONFLICT (tenant_id, name) DO NOTHING;
+
+        INSERT INTO categories (id, tenant_id, name, code, description)
+        VALUES (uuid_generate_v4(), t_record.id, 'Autoparts', 'AUTOPARTS', 'Automotive spare parts & components')
+        ON CONFLICT (tenant_id, name) DO NOTHING;
+      END LOOP;
+    END $$;
+  `
+},
   ];
 }

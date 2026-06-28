@@ -46,7 +46,11 @@ export interface MetaConfig {
 
 // ── Build config from environment ────────────────────────────
 function buildConfig(): MetaConfig {
-  const appUrl = (process.env.PUBLIC_APP_URL || 'https://demandgenius.vercel.app').replace(/\/$/, '');
+  // Webhook endpoint: the public HTTPS URL Meta calls (ngrok in dev, backend domain in prod)
+  const webhookBase = (process.env.PUBLIC_APP_URL || 'https://demandgenius.vercel.app').replace(/\/$/, '');
+
+  // User-facing links sent inside WhatsApp messages — always the Vercel frontend
+  const appUrl = (process.env.PUBLIC_FRONTEND_URL || 'https://demandgenius.vercel.app').replace(/\/$/, '');
 
   return {
     // Credentials
@@ -61,7 +65,7 @@ function buildConfig(): MetaConfig {
     // URLs
     appUrl,
     exploreUrl: `${appUrl}/explore`,
-    loginUrl:   `${appUrl}/login`,
+    loginUrl:   appUrl,
 
     // Bot behaviour
     bot: {
@@ -73,10 +77,10 @@ function buildConfig(): MetaConfig {
       sessionTimeoutDays: 30,
     },
 
-    // Webhook
+    // Webhook — uses the backend public URL (ngrok in dev), NOT the frontend URL
     webhook: {
       path:    '/v1/webhooks/whatsapp',
-      fullUrl: `${appUrl}/v1/webhooks/whatsapp`,
+      fullUrl: `${webhookBase}/v1/webhooks/whatsapp`,
     },
 
     // Feature flags

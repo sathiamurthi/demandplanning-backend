@@ -20,9 +20,22 @@ export interface GetTenantsQuery extends IQuery {
 export class GetTenantsQueryHandler implements IQueryHandler<GetTenantsQuery, any> {
   async execute(q: GetTenantsQuery) {
     return query(
-      `SELECT id, company_name, admin_email, status, created_at 
-       FROM tenants 
-       ORDER BY created_at DESC`
+      `SELECT t.id,
+              t.name              AS company_name,
+              t.billing_email     AS admin_email,
+              t.billing_status    AS status,
+              t.is_active,
+              t.plan_type,
+              t.slug,
+              t.city,
+              t.created_at,
+              COUNT(DISTINCT s.id)::int  AS store_count,
+              COUNT(DISTINCT u.id)::int  AS user_count
+       FROM tenants t
+       LEFT JOIN stores s ON s.tenant_id = t.id
+       LEFT JOIN users  u ON u.tenant_id = t.id
+       GROUP BY t.id
+       ORDER BY t.created_at DESC`
     );
   }
 }
@@ -33,10 +46,32 @@ export interface ApproveTenantCommand extends ICommand {
 }
 export class ApproveTenantCommandHandler implements ICommandHandler<ApproveTenantCommand, any> {
   async execute(c: ApproveTenantCommand) {
-    return query(
-      `UPDATE tenants SET status='approved' WHERE id=$1 RETURNING *`,
+    const result = await query(
+      `UPDATE tenants SET billing_status='active', is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING *`,
       [c.tenantId]
     );
+
+    // Seed default categories if none exist yet
+    const existing = await query(
+      `SELECT COUNT(*)::int AS cnt FROM categories WHERE tenant_id=$1`,
+      [c.tenantId]
+    );
+    if ((existing[0] as any)?.cnt === 0) {
+      const defaults = [
+        { name: "Pharma",    code: "PHARMA",    desc: "Pharmaceutical & medicines" },
+        { name: "Groceries", code: "GROCERY",   desc: "General groceries & food items" },
+        { name: "Parts",     code: "PARTS",     desc: "Spare parts & components" },
+      ];
+      for (const cat of defaults) {
+        await query(
+          `INSERT INTO categories (tenant_id, name, code, description, sort_order)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
+          [c.tenantId, cat.name, cat.code, cat.desc, defaults.indexOf(cat)]
+        );
+      }
+    }
+
+    return result;
   }
 }
 

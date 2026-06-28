@@ -29,12 +29,26 @@ export async function getTenants(req: Request, res: Response) {
 }
 
 export async function approveTenant(req: Request, res: Response) {
-  const id = req.params.id as string;
-  const result = await commandBus.execute<ApproveTenantCommand>({
-    type: "superadmin.tenant.approve",
-    tenantId: id,
-  });
-  res.json(result);
+  try {
+    const id = req.params.id as string;
+    const result = await commandBus.execute<ApproveTenantCommand>({
+      type: "superadmin.tenant.approve",
+      tenantId: id,
+    });
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deactivateTenant(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    await dbQuery(`UPDATE tenants SET is_active=FALSE, billing_status='cancelled', updated_at=NOW() WHERE id=$1`, [id]);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 }
 
 export async function getUsers(req: Request, res: Response) {
@@ -254,6 +268,7 @@ const router = Router();
 
 router.get("/tenants", getTenants);
 router.post("/tenants/approve/:id", approveTenant);
+router.post("/tenants/deactivate/:id", deactivateTenant);
 
 router.get("/users", getUsers);
 router.patch("/users/:id/password", changePassword);

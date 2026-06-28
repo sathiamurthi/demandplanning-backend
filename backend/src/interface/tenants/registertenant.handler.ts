@@ -81,6 +81,20 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
       );
       const user = userRes.rows[0];
 
+      const defaultCategories = [
+        { name: "Pharma",    code: "PHARMA",  desc: "Pharmaceutical & medicines" },
+        { name: "Groceries", code: "GROCERY", desc: "General groceries & food items" },
+        { name: "Autoparts", code: "AUTOPARTS", desc: "Automotive spare parts & components" },
+      ];
+      for (let i = 0; i < defaultCategories.length; i++) {
+        const cat = defaultCategories[i];
+        await client.query(
+          `INSERT INTO categories (tenant_id, name, code, description, sort_order)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
+          [tenant.id, cat.name, cat.code, cat.desc, i]
+        );
+      }
+
       const result = {
         tenant,
         store,

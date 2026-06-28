@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
+import { callGemini } from './gemini.service';
 import { query, queryOne, withTransaction } from '../../config/db';
 import { commandBus, ICommand, ICommandHandler } from '../../cqrs/commandBus';
 import { queryBus, IQuery, IQueryHandler } from '../../cqrs/queryBus';
@@ -222,23 +223,48 @@ Respond ONLY with a valid JSON array — no markdown, no preamble, no extra text
 Items to analyze:
 ${JSON.stringify(promptData, null, 2)}`;
 
-    // 7. Call Claude — email stays out of the prompt entirely
-    let aiMessage: any;
+    // 7. Call AI Service — email stays out of the prompt entirely
+    let modelName: string;
+    let rawText = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
     const _t0Forecast = Date.now();
-    try {
-      aiMessage = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      logAIUsage({ feature: 'forecast', model: 'claude-sonnet-4-20250514', promptTokens: aiMessage.usage.input_tokens, completionTokens: aiMessage.usage.output_tokens, latencyMs: Date.now() - _t0Forecast, status: 'success', tenantId: cmd.tenantId, storeId: cmd.storeId });
-    } catch (err: any) {
-      logAIUsage({ feature: 'forecast', model: 'claude-sonnet-4-20250514', promptTokens: 0, completionTokens: 0, latencyMs: Date.now() - _t0Forecast, status: 'error', errorMsg: err.message, tenantId: cmd.tenantId, storeId: cmd.storeId });
-      throw new Error(`AI service error: ${err.message}`);
+
+    if (process.env.AI_PROVIDER === 'gemini') {
+      try {
+        const geminiRes = await callGemini({
+          prompt: prompt,
+          maxTokens: 2000,
+          responseMimeType: 'application/json',
+        });
+        modelName = geminiRes.model;
+        rawText = geminiRes.text;
+        promptTokens = geminiRes.inputTokens;
+        completionTokens = geminiRes.outputTokens;
+        await logAIUsage({ feature: 'forecast', model: modelName, promptTokens, completionTokens, latencyMs: Date.now() - _t0Forecast, status: 'success', tenantId: cmd.tenantId, storeId: cmd.storeId });
+      } catch (err: any) {
+        await logAIUsage({ feature: 'forecast', model: process.env.GEMINI_MODEL || 'gemini-2.5-flash', promptTokens: 0, completionTokens: 0, latencyMs: Date.now() - _t0Forecast, status: 'error', errorMsg: err.message, tenantId: cmd.tenantId, storeId: cmd.storeId });
+        throw new Error(`AI service error: ${err.message}`);
+      }
+    } else {
+      try {
+        const aiMessage = await this.anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        modelName = 'claude-sonnet-4-20250514';
+        rawText = (aiMessage.content[0] as any).text;
+        promptTokens = aiMessage.usage.input_tokens;
+        completionTokens = aiMessage.usage.output_tokens;
+        await logAIUsage({ feature: 'forecast', model: modelName, promptTokens, completionTokens, latencyMs: Date.now() - _t0Forecast, status: 'success', tenantId: cmd.tenantId, storeId: cmd.storeId });
+      } catch (err: any) {
+        await logAIUsage({ feature: 'forecast', model: 'claude-sonnet-4-20250514', promptTokens: 0, completionTokens: 0, latencyMs: Date.now() - _t0Forecast, status: 'error', errorMsg: err.message, tenantId: cmd.tenantId, storeId: cmd.storeId });
+        throw new Error(`AI service error: ${err.message}`);
+      }
     }
 
     // 8. Parse + validate AI output with Zod
-    const rawText = (aiMessage.content[0] as any).text;
     const cleaned = rawText.replace(/```json|```/g, '').trim();
     let parsed: any[];
     try {
@@ -295,8 +321,9 @@ ${JSON.stringify(promptData, null, 2)}`;
             p.aiResult.predictedQty30d, p.aiResult.confidencePct,
             p.aiResult.orderNeeded, p.aiResult.orderQty, p.aiResult.riskLevel,
             p.aiResult.reasoning, p.email, cmd.industryId,
-            'claude-sonnet-4-20250514',
-            aiMessage.usage.input_tokens, aiMessage.usage.output_tokens,
+            modelName,
+            promptTokens,
+            completionTokens,
           ]
         );
 
@@ -332,7 +359,7 @@ ${JSON.stringify(promptData, null, 2)}`;
       results: payloads,
       totalCount: payloads.length,
       generatedAt: new Date().toISOString(),
-      tokensUsed: aiMessage.usage.input_tokens + aiMessage.usage.output_tokens,
+      tokensUsed: promptTokens + completionTokens,
       sanitizerWarnings: sanitizedItems.flatMap(i => i.sanitize_warnings),
     };
   }
@@ -385,15 +412,68 @@ Items: ${JSON.stringify(allItems.map(i => ({ id: i.id, name: i.name, brand: i.br
 Respond ONLY with a JSON array of item IDs, most relevant first, max 10: ["id1","id2",...]`;
 
     const _t0Search = Date.now();
-    const msg = await this.anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 200,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    logAIUsage({ feature: 'search', model: 'claude-sonnet-4-20250514', promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens, latencyMs: Date.now() - _t0Search, status: 'success' });
+    let rawText = '';
 
-    const rawText = (msg.content[0] as any).text.replace(/```json|```/g, '').trim();
-    const ids: string[] = JSON.parse(rawText);
+    if (process.env.AI_PROVIDER === 'gemini') {
+      try {
+        const geminiRes = await callGemini({
+          prompt: prompt,
+          maxTokens: 200,
+          responseMimeType: 'application/json',
+        });
+        rawText = geminiRes.text;
+        await logAIUsage({
+          feature: 'search',
+          model: geminiRes.model,
+          promptTokens: geminiRes.inputTokens,
+          completionTokens: geminiRes.outputTokens,
+          latencyMs: Date.now() - _t0Search,
+          status: 'success',
+        });
+      } catch (err: any) {
+        await logAIUsage({
+          feature: 'search',
+          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+          promptTokens: 0,
+          completionTokens: 0,
+          latencyMs: Date.now() - _t0Search,
+          status: 'error',
+          errorMsg: err.message,
+        });
+        throw new Error(`AI search service error: ${err.message}`);
+      }
+    } else {
+      try {
+        const msg = await this.anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 200,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        rawText = (msg.content[0] as any).text;
+        await logAIUsage({
+          feature: 'search',
+          model: 'claude-sonnet-4-20250514',
+          promptTokens: msg.usage.input_tokens,
+          completionTokens: msg.usage.output_tokens,
+          latencyMs: Date.now() - _t0Search,
+          status: 'success',
+        });
+      } catch (err: any) {
+        await logAIUsage({
+          feature: 'search',
+          model: 'claude-sonnet-4-20250514',
+          promptTokens: 0,
+          completionTokens: 0,
+          latencyMs: Date.now() - _t0Search,
+          status: 'error',
+          errorMsg: err.message,
+        });
+        throw new Error(`AI search service error: ${err.message}`);
+      }
+    }
+
+    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    const ids: string[] = JSON.parse(cleaned);
     const results = allItems.filter(i => ids.includes(i.id)).sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
     return { results, source: 'ai', query: sanitized.clean };
   }
@@ -607,8 +687,6 @@ aiRouter.post('/suggest', async (req, res) => {
     const sanitized = sanitizePrompt(name.trim(), store);
     if (sanitized.blocked) return fail(res, `Input blocked: ${sanitized.reason}`);
 
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
-
     const prompt = `You are an inventory management assistant for a ${store?.prompt_context || 'retail store'}.
 Given the ${store?.item_noun || 'item'} name: "${sanitized.clean}"
 Suggest the following fields. Respond ONLY with valid JSON — no markdown, no preamble:
@@ -622,17 +700,71 @@ Suggest the following fields. Respond ONLY with valid JSON — no markdown, no p
 }`;
 
     const _t0Suggest = Date.now();
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 300,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    logAIUsage({ feature: 'suggest', model: 'claude-haiku-4-5-20251001', promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens, latencyMs: Date.now() - _t0Suggest, status: 'success' });
+    let rawText = '';
 
-    const rawText = (msg.content[0] as any).text.replace(/```json|```/g, '').trim();
+    if (process.env.AI_PROVIDER === 'gemini') {
+      try {
+        const geminiRes = await callGemini({
+          prompt: prompt,
+          maxTokens: 300,
+          responseMimeType: 'application/json',
+        });
+        rawText = geminiRes.text;
+        await logAIUsage({
+          feature: 'suggest',
+          model: geminiRes.model,
+          promptTokens: geminiRes.inputTokens,
+          completionTokens: geminiRes.outputTokens,
+          latencyMs: Date.now() - _t0Suggest,
+          status: 'success',
+        });
+      } catch (err: any) {
+        await logAIUsage({
+          feature: 'suggest',
+          model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+          promptTokens: 0,
+          completionTokens: 0,
+          latencyMs: Date.now() - _t0Suggest,
+          status: 'error',
+          errorMsg: err.message,
+        });
+        throw new Error(`AI suggest service error: ${err.message}`);
+      }
+    } else {
+      try {
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
+        const msg = await anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 300,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        rawText = (msg.content[0] as any).text;
+        await logAIUsage({
+          feature: 'suggest',
+          model: 'claude-haiku-4-5-20251001',
+          promptTokens: msg.usage.input_tokens,
+          completionTokens: msg.usage.output_tokens,
+          latencyMs: Date.now() - _t0Suggest,
+          status: 'success',
+        });
+      } catch (err: any) {
+        await logAIUsage({
+          feature: 'suggest',
+          model: 'claude-haiku-4-5-20251001',
+          promptTokens: 0,
+          completionTokens: 0,
+          latencyMs: Date.now() - _t0Suggest,
+          status: 'error',
+          errorMsg: err.message,
+        });
+        throw new Error(`AI suggest service error: ${err.message}`);
+      }
+    }
+
+    const cleaned = rawText.replace(/```json|```/g, '').trim();
     let suggestion: any;
     try {
-      suggestion = JSON.parse(rawText);
+      suggestion = JSON.parse(cleaned);
     } catch {
       return fail(res, 'AI returned invalid JSON — please try again');
     }
