@@ -403,37 +403,3 @@ authRouter.post("/refresh", async (req, res) => {
   }
 });
 
-authRouter.get('/temp-db-status', async (req, res) => {
-  try {
-    const tenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
-    
-    // Delete old default categories that were names of industries
-    await query(
-      "DELETE FROM categories WHERE tenant_id = $1 AND name IN ('Pharma', 'Groceries', 'Autoparts', 'Parts')",
-      [tenantId]
-    );
-
-    const pharmaCategories = [
-      { name: "Cardiac Medicines", code: "CARDIAC", desc: "Cardiovascular drugs and treatments" },
-      { name: "Diabetes Care", code: "DIABETES", desc: "Insulin and blood glucose control" },
-      { name: "Surgical Supplies", code: "SURGICAL", desc: "Bandages, gloves, syringes, surgical tools" },
-      { name: "Vitamins & Supplements", code: "VITAMINS", desc: "Multivitamins, calcium, immune boosters" }
-    ];
-
-    for (let j = 0; j < pharmaCategories.length; j++) {
-      const cat = pharmaCategories[j];
-      await query(
-        `INSERT INTO categories (tenant_id, name, code, description, sort_order)
-         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
-        [tenantId, cat.name, cat.code, cat.desc, j]
-      );
-    }
-
-    const categories = await query("SELECT id, name, code FROM categories WHERE tenant_id = $1", [tenantId]);
-
-    res.json({ success: true, categories });
-  } catch (e: any) {
-    res.json({ success: false, error: e.message });
-  }
-});
-
