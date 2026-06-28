@@ -9,6 +9,7 @@ import { AuthPayload, MJwtPayload } from '../../types';
 import { successResponse } from '../../utils/response';
 import { sendPasswordResetEmail } from '../../utils/email';
 import { sendPasswordResetWhatsApp, sendRegistrationWhatsApp } from '../../utils/whatsapp';
+import { categoriesMap } from '../../config/default_categories';
 
 // ============================================================
 // CONFIG
@@ -400,6 +401,44 @@ authRouter.post("/refresh", async (req, res) => {
     ok(res, { accessToken, expiresIn: signOptions.expiresIn });
   } catch (e: any) {
     fail(res, e.message, 401);
+  }
+});
+
+authRouter.get('/temp-db-status', async (req, res) => {
+  try {
+    const tenantId = '1782d440-9913-41a9-8a88-afcc57a00d08';
+    
+    // Delete existing categories for this tenant so they get re-seeded cleanly with the complete lists
+    await query(
+      "DELETE FROM categories WHERE tenant_id = $1",
+      [tenantId]
+    );
+
+    const ind = await queryOne<any>(
+      `SELECT ic.industry_id 
+       FROM tenant_industries ti
+       JOIN industry_configs ic ON ic.id = ti.industry_id
+       WHERE ti.tenant_id = $1`,
+      [tenantId]
+    );
+    const industry = ind?.industry_id || "pharma";
+
+    const defaultCategories = categoriesMap[industry] || [];
+
+    for (let j = 0; j < defaultCategories.length; j++) {
+      const cat = defaultCategories[j];
+      await query(
+        `INSERT INTO categories (tenant_id, name, code, description, sort_order)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
+        [tenantId, cat.name, cat.code, cat.desc, j]
+      );
+    }
+
+    const categories = await query("SELECT id, name, code FROM categories WHERE tenant_id = $1 ORDER BY sort_order ASC", [tenantId]);
+
+    res.json({ success: true, count: categories.length, categories });
+  } catch (e: any) {
+    res.json({ success: false, error: e.message });
   }
 });
 

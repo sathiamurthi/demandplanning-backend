@@ -9,6 +9,7 @@ import { queryBus, IQuery, IQueryHandler } from '../../cqrs/queryBus';
 import { authMiddleware } from '../auth/auth.service';
 import { requireMinRole } from '../../core/guards/roleGuard';
 import { requireTenantAccess } from '../../core/guards/roleGuard';
+import { categoriesMap } from '../../config/default_categories';
 
 function ok(res: any, data: any, status = 200) {
   res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
@@ -188,26 +189,7 @@ class ListCategoriesQueryHandler implements IQueryHandler<ListCategoriesQuery, a
       );
       const industry = ind?.industry_id || "retail";
 
-      const categoriesMap: Record<string, Array<{ name: string, code: string, desc: string }>> = {
-        pharma: [
-          { name: "Cardiac Medicines", code: "CARDIAC", desc: "Cardiovascular drugs and treatments" },
-          { name: "Diabetes Care", code: "DIABETES", desc: "Insulin and blood glucose control" },
-          { name: "Surgical Supplies", code: "SURGICAL", desc: "Bandages, gloves, syringes, surgical tools" },
-          { name: "Vitamins & Supplements", code: "VITAMINS", desc: "Multivitamins, calcium, immune boosters" }
-        ],
-        grocery: [
-          { name: "Vegetables & Fruits", code: "PRODUCE", desc: "Fresh fruits and green vegetables" },
-          { name: "Dairy & Eggs", code: "DAIRY", desc: "Milk, cheese, butter, eggs" },
-          { name: "Grains & Pulses", code: "GRAINS", desc: "Rice, wheat, flour, lentils" },
-          { name: "Beverages", code: "BEVERAGES", desc: "Soft drinks, juices, tea, coffee" }
-        ],
-        auto: [
-          { name: "Engine Parts", code: "ENGINE", desc: "Spark plugs, pistons, filters, engine belts" },
-          { name: "Electrical", code: "ELECTRICAL", desc: "Batteries, car bulbs, fuses, sensors" },
-          { name: "Body & Exterior", code: "BODY", desc: "Mirrors, wipers, bumpers, panels" },
-          { name: "Tyres & Wheels", code: "TYRES", desc: "Car and motorcycle tyres, tubes, rims" }
-        ]
-      };
+
 
       const defaultCategories = categoriesMap[industry] || [
         { name: "General", code: "GENERAL", desc: "Default category" }

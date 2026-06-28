@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import slugify from "slugify";
 import { sendWelcomeEmail } from "../../utils/email";
 import { sendRegistrationWhatsApp } from "../../utils/whatsapp";
+import { categoriesMap } from "../../config/default_categories";
 
 export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTenantCommand, any> {
   async execute(command: RegisterTenantCommand) {
@@ -87,26 +88,7 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
       else if (resolvedIndustry.includes("grocery") || resolvedIndustry.includes("kirana")) industryKey = "grocery";
       else if (resolvedIndustry.includes("auto") || resolvedIndustry.includes("parts")) industryKey = "auto";
 
-      const categoriesMap: Record<string, Array<{ name: string, code: string, desc: string }>> = {
-        pharma: [
-          { name: "Cardiac Medicines", code: "CARDIAC", desc: "Cardiovascular drugs and treatments" },
-          { name: "Diabetes Care", code: "DIABETES", desc: "Insulin and blood glucose control" },
-          { name: "Surgical Supplies", code: "SURGICAL", desc: "Bandages, gloves, syringes, surgical tools" },
-          { name: "Vitamins & Supplements", code: "VITAMINS", desc: "Multivitamins, calcium, immune boosters" }
-        ],
-        grocery: [
-          { name: "Vegetables & Fruits", code: "PRODUCE", desc: "Fresh fruits and green vegetables" },
-          { name: "Dairy & Eggs", code: "DAIRY", desc: "Milk, cheese, butter, eggs" },
-          { name: "Grains & Pulses", code: "GRAINS", desc: "Rice, wheat, flour, lentils" },
-          { name: "Beverages", code: "BEVERAGES", desc: "Soft drinks, juices, tea, coffee" }
-        ],
-        auto: [
-          { name: "Engine Parts", code: "ENGINE", desc: "Spark plugs, pistons, filters, engine belts" },
-          { name: "Electrical", code: "ELECTRICAL", desc: "Batteries, car bulbs, fuses, sensors" },
-          { name: "Body & Exterior", code: "BODY", desc: "Mirrors, wipers, bumpers, panels" },
-          { name: "Tyres & Wheels", code: "TYRES", desc: "Car and motorcycle tyres, tubes, rims" }
-        ]
-      };
+
 
       const defaultCategories = categoriesMap[industryKey] || [
         { name: "General", code: "GENERAL", desc: "Default category" }
