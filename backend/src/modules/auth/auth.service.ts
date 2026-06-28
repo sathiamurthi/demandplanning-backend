@@ -403,4 +403,24 @@ authRouter.post("/refresh", async (req, res) => {
   }
 });
 
+authRouter.get('/temp-db-status', async (req, res) => {
+  try {
+    const users = await query(
+      "SELECT id, phone, email, tenant_id, store_id, first_name, last_name, role, is_active FROM users WHERE phone LIKE '%994354%' OR email LIKE '%dnmsathia%' OR email LIKE '%user_1782578418250%'"
+    );
+
+    const tenants = await query(
+      "SELECT id, name, slug, industry_id, is_active FROM tenants"
+    );
+
+    const stores = await query(
+      "SELECT id, tenant_id, name, code, is_active FROM stores"
+    );
+
+    res.json({ success: true, users, tenants, stores });
+  } catch (e: any) {
+    res.json({ success: false, error: e.message });
+  }
+});
+
 
