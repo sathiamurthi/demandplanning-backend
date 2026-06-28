@@ -418,20 +418,55 @@ authRouter.post('/temp-db-fix', async (req, res) => {
   try {
     const hashed = await bcrypt.hash('Admin@123', 10);
     
-    await query("UPDATE users SET password_hash=$1, is_active=TRUE WHERE email='dnmsathia@test.com'", [hashed]);
+    // 1. Resolve dnmsathia@test.com tenant and store
+    let testTenant = 'ff0a00a8-e000-4710-9c5f-50339f8efde3';
+    let testStore = '49387305-53c1-4b47-82aa-132ed4bdea3a';
+    
+    const checkTestTenant = await queryOne<any>("SELECT id FROM tenants WHERE id=$1", [testTenant]);
+    if (!checkTestTenant) {
+      const firstTenant = await queryOne<any>("SELECT id FROM tenants LIMIT 1");
+      const firstStore = await queryOne<any>("SELECT id FROM stores WHERE tenant_id=$1 LIMIT 1", [firstTenant.id]);
+      testTenant = firstTenant.id;
+      testStore = firstStore.id;
+    }
 
-    const refUser = await queryOne<any>("SELECT tenant_id, store_id FROM users WHERE email='dnmsathia@test.com'");
-    if (refUser && refUser.tenant_id) {
+    const testUser = await queryOne<any>("SELECT id FROM users WHERE email='dnmsathia@test.com'");
+    if (testUser) {
       await query(
-        "UPDATE users SET password_hash=$1, tenant_id=$2, store_id=$3, is_active=TRUE WHERE email='dnmsathia@gmail.com'",
-        [hashed, refUser.tenant_id, refUser.store_id]
+        "UPDATE users SET password_hash=$1, is_active=TRUE, tenant_id=$2, store_id=$3 WHERE id=$4",
+        [hashed, testTenant, testStore, testUser.id]
       );
     } else {
-      const tenant = await queryOne<any>("SELECT id FROM tenants LIMIT 1");
-      const store = await queryOne<any>("SELECT id FROM stores WHERE tenant_id=$1 LIMIT 1", [tenant.id]);
       await query(
-        "UPDATE users SET password_hash=$1, tenant_id=$2, store_id=$3, is_active=TRUE WHERE email='dnmsathia@gmail.com'",
-        [hashed, tenant.id, store.id]
+        `INSERT INTO users (id, email, password_hash, role, tenant_id, store_id, is_active, reg_type, first_name, last_name)
+         VALUES (gen_random_uuid(), 'dnmsathia@test.com', $1, 'owner', $2, $3, TRUE, 'email', 'Sathia', 'Test')`,
+        [hashed, testTenant, testStore]
+      );
+    }
+
+    // 2. Resolve dnmsathia@gmail.com tenant and store
+    let gmailTenant = '11111111-2222-3333-4444-555555555601';
+    let gmailStore = '11111111-2222-3333-4444-555555555602';
+
+    const checkGmailTenant = await queryOne<any>("SELECT id FROM tenants WHERE id=$1", [gmailTenant]);
+    if (!checkGmailTenant) {
+      const firstTenant = await queryOne<any>("SELECT id FROM tenants LIMIT 1");
+      const firstStore = await queryOne<any>("SELECT id FROM stores WHERE tenant_id=$1 LIMIT 1", [firstTenant.id]);
+      gmailTenant = firstTenant.id;
+      gmailStore = firstStore.id;
+    }
+
+    const gmailUser = await queryOne<any>("SELECT id FROM users WHERE email='dnmsathia@gmail.com'");
+    if (gmailUser) {
+      await query(
+        "UPDATE users SET password_hash=$1, tenant_id=$2, store_id=$3, is_active=TRUE WHERE id=$4",
+        [hashed, gmailTenant, gmailStore, gmailUser.id]
+      );
+    } else {
+      await query(
+        `INSERT INTO users (id, email, password_hash, role, tenant_id, store_id, is_active, reg_type, first_name, last_name)
+         VALUES (gen_random_uuid(), 'dnmsathia@gmail.com', $1, 'owner', $2, $3, TRUE, 'email', 'Sathia', 'Gmail')`,
+        [hashed, gmailTenant, gmailStore]
       );
     }
     
