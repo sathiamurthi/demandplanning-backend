@@ -1006,11 +1006,16 @@ publicSearchRouter.post('/whatsapp/verify/send', async (req, res) => {
     const result = await sendWhatsAppText(cleanPhone, message);
     
     // In dev / skipped mode, log the code to console so we can verify easily
-    if (result.skipped) {
-      console.log(`[WA Verification DEV] Code for ${cleanPhone}: ${code}`);
+    if (result.skipped || !result.sent) {
+      console.log(`[WA Verification DEV] Code for ${cleanPhone}: ${code} (Sent: ${result.sent}, Error: ${result.error || 'None'})`);
     }
 
-    return ok(res, { message: 'Verification code sent.', devCode: result.skipped ? code : undefined });
+    const showDevCode = result.skipped || !result.sent || process.env.NODE_ENV !== 'production';
+
+    return ok(res, { 
+      message: result.sent ? 'Verification code sent.' : 'Verification code simulated.', 
+      devCode: showDevCode ? code : undefined 
+    });
   } catch (e: any) {
     return fail(res, e.message, 500);
   }
