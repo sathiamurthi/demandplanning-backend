@@ -78,11 +78,12 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
         const lineSubtotal = si.unitPrice * si.qtySold - discount;
         const gstRate = (si as any).gstRate ?? parseFloat(item.gst_rate) ?? 0;        const lineGst = (lineSubtotal * gstRate) / 100;
         const lineTotal = lineSubtotal + lineGst;
+        const unitId = si.unitId || item.primary_unit_id;
 
         const [li] = await client.query(
           `INSERT INTO sale_items (sale_id,item_id,qty_sold,unit_id,unit_price,discount_pct,discount_amount,gst_rate,gst_amount,line_total,batch_number,expiry_date)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-          [sale.id,si.itemId,si.qtySold,si.unitId,si.unitPrice,si.discountPct||0,discount,gstRate,lineGst,lineTotal,si.batchNumber||null,si.expiryDate||null]
+          [sale.id,si.itemId,si.qtySold,unitId,si.unitPrice,si.discountPct||0,discount,gstRate,lineGst,lineTotal,si.batchNumber||null,si.expiryDate||null]
         ).then(r=>r.rows);
         lineItems.push(li);
 
@@ -92,7 +93,7 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
           `INSERT INTO stock_ledger (item_id,store_id,tenant_id,movement_type,reference_id,reference_type,qty_before,qty_change,qty_after,unit_id,unit_price,created_by)
            VALUES ($1,$2,$3,'sale',$4,'sale',$5,$6,$7,$8,$9,$10)`,
           [si.itemId,cmd.storeId,cmd.tenantId,sale.id,
-           parseFloat(item.current_stock),-(si.qtySold),su.newStock,si.unitId,si.unitPrice,cmd.createdBy]
+           parseFloat(item.current_stock),-(si.qtySold),su.newStock,unitId,si.unitPrice,cmd.createdBy]
         );
         // Update stock
         await client.query('UPDATE items SET current_stock=$1, updated_at=NOW() WHERE id=$2',[su.newStock,si.itemId]);
@@ -300,7 +301,7 @@ export const salesRouter = Router({ mergeParams: true });
 
 const SaleItemSchema = z.object({
   itemId: z.string().uuid(), qtySold: z.number().positive(),
-  unitId: z.string().uuid(), unitPrice: z.number().positive(),
+  unitId: z.string().uuid().optional().nullable(), unitPrice: z.number().positive(),
   discountPct: z.number().min(0).max(100).optional(),
   batchNumber: z.string().optional(), expiryDate: z.string().optional(),
   gstRate: z.number().optional(),
