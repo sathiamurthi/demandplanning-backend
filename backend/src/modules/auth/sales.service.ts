@@ -388,6 +388,7 @@ salesRouter.post('/', requireMinRole('staff'), async (req, res) => {
       storeId: req.params.storeId,
       tenantId: user.tenantId,
       createdBy: user.sub,
+      saleType: body.saleType || 'individual',   // ← always provide a value
       ...body,
     } as CreateSaleCommand);
     ok(res, r, 201);

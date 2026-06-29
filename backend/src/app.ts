@@ -19,6 +19,7 @@ import { tenantRouter }              from './modules/auth/tenants.service';
 import { storeRouter }               from './modules/auth/stores.service';
 import { itemRouter }                from './modules/auth/items.service';
 import { salesRouter }               from './modules/auth/sales.service';
+import { couponsRouter, superadminCouponsRouter } from './modules/auth/coupons.service';
 // ── Dedicated modules ─────────────────────────────────────────
 import { industryRouter }            from './modules/auth/industry.service';
 import { aiRouter, aiSettingsRouter } from './modules/auth/ai.service';
@@ -149,6 +150,7 @@ app.use('/v1/tenants/:tenantId/suppliers',            suppliersRouter);
 app.use('/v1/tenants/:tenantId/purchase-orders',     purchaseOrdersRouter);
 app.use('/v1/tenants/:tenantId/stores/:storeId/items',   itemRouter);
 app.use('/v1/stores/:storeId/sales',   authMiddleware, salesRouter);
+app.use('/v1/tenants/:tenantId/coupons', couponsRouter);
 app.use('/v1/stores/:storeId/report',          authMiddleware, aiRouter);
 app.use('/v1/tenants/:tenantId/ai-settings',   aiSettingsRouter);
 app.use('/v1/alerts',                  alertRouter);
@@ -160,6 +162,7 @@ app.use('/v1/tenants/:tenantId/tea', teaRouter);
 
 // ── SUPERADMIN ROUTER ────────────────────────────────────────
 app.use('/v1/superadmin', authMiddleware, superadminRouter);
+app.use('/v1/superadmin/coupons', authMiddleware, superadminCouponsRouter);
 
 // ── Request logger ───────────────────────────────────────────
 if (process.env.LOG_API_CALLS === 'true') {

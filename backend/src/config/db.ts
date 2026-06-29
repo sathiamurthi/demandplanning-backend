@@ -2167,5 +2167,42 @@ END $$;
         );
       `
     },
+    {
+      name: '055_coupons',
+      sql: `
+        CREATE TABLE IF NOT EXISTS coupons (
+          id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id        UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          store_id         UUID REFERENCES stores(id) ON DELETE SET NULL,
+          code             VARCHAR(30) NOT NULL,
+          description      TEXT,
+          discount_type    VARCHAR(20) NOT NULL CHECK (discount_type IN ('percentage','fixed')),
+          discount_value   DECIMAL(10,2) NOT NULL,
+          min_order_value  DECIMAL(10,2) DEFAULT 0,
+          max_discount     DECIMAL(10,2),
+          usage_limit      INT,
+          valid_from       TIMESTAMPTZ,
+          valid_to         TIMESTAMPTZ,
+          is_active        BOOLEAN DEFAULT TRUE,
+          created_by       UUID,
+          created_at       TIMESTAMPTZ DEFAULT NOW(),
+          updated_at       TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(tenant_id, code)
+        );
+        CREATE INDEX IF NOT EXISTS idx_coupons_tenant ON coupons(tenant_id, is_active);
+        CREATE INDEX IF NOT EXISTS idx_coupons_code   ON coupons(UPPER(code));
+
+        CREATE TABLE IF NOT EXISTS coupon_usages (
+          id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          coupon_id  UUID NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
+          sale_id    UUID,
+          user_id    UUID,
+          used_at    TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_coupon_usages_coupon ON coupon_usages(coupon_id);
+
+        ALTER TABLE sales ADD COLUMN IF NOT EXISTS coupon_id UUID REFERENCES coupons(id) ON DELETE SET NULL;
+      `
+    },
   ];
 }
