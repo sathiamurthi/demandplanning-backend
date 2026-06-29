@@ -13,7 +13,7 @@ async function run() {
     console.log('GEMINI_API_KEY exists:', !!process.env.GEMINI_API_KEY);
     console.log('CLAUDE_API_KEY exists:', !!(process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY));
     
-    const res = await aiQuickSearch(13.0130, 77.6675, "best bar near me");
+    const res = await aiQuickSearch(13.0130, 77.6675, "best bar near 2km");
     console.log('Result:', JSON.stringify(res, null, 2));
   } catch (err) {
     console.error('ERROR:', err);
