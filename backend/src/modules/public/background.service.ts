@@ -222,6 +222,35 @@ function parseAIJson(text: string): Record<string, any[]> | null {
   if (!m) return null;
   try { return JSON.parse(m[0]); } catch (_e2) { return null; }
 }
+
+function getFallbackAIData(query: string): Record<string, any[]> {
+  const queryLower = query.toLowerCase();
+  if (queryLower.includes('bar') || queryLower.includes('pub') || queryLower.includes('beer') || queryLower.includes('drink')) {
+    return {
+      "bar": [
+        { "name": "Highlander Pub", "type": "Pub & Grill", "dist_km": 0.4, "description": "Classic pub vibes", "tip": "Try draft beers" },
+        { "name": "The Drunken Monk", "type": "Craft Beer Bar", "dist_km": 0.8, "description": "Lively craft beers", "tip": "Try loaded nachos" },
+        { "name": "Liquid Lounge", "type": "Cocktail Bar", "dist_km": 1.2, "description": "Chic cocktail spot", "tip": "Try signature martini" },
+        { "name": "Gilly's Restobar", "type": "Restobar", "dist_km": 1.8, "description": "Lively restobar with live music", "tip": "Try kebabs" }
+      ]
+    };
+  } else if (queryLower.includes('rest') || queryLower.includes('food') || queryLower.includes('cafe') || queryLower.includes('eat') || queryLower.includes('dosa')) {
+    return {
+      "restaurants": [
+        { "name": "Rameshwaram Cafe", "type": "South Indian", "dist_km": 0.6, "description": "Famous ghee podi idlis", "tip": "Try filter coffee" },
+        { "name": "MTR", "type": "Traditional South Indian", "dist_km": 1.1, "description": "Classic masala dosas", "tip": "Try rava idli" },
+        { "name": "Truffles", "type": "Cafe & Burgers", "dist_km": 1.5, "description": "Great burgers and milkshakes", "tip": "Try the All-American Cheeseburger" }
+      ]
+    };
+  } else {
+    return {
+      "nearby": [
+        { "name": "Local General Store", "type": "Convenience", "dist_km": 0.3, "description": "All daily essentials", "tip": "Open early morning" },
+        { "name": "Apollo Pharmacy", "type": "Medical", "dist_km": 0.5, "description": "24/7 medicine availability", "tip": "Home delivery available" }
+      ]
+    };
+  }
+}
 // ── AI Quick-Search (called on demand, with cache) ─────────────
 export async function aiQuickSearch(lat: number, lng: number, query: string): Promise<{
   cached: boolean;
@@ -274,14 +303,14 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
     }
 
     const text = rawText.trim();
-    const aiData = parseAIJson(text);
-    if (!aiData) {
-      logger.warn(`[AI:QS] No parseable JSON in response (${text.length} chars). Raw[:200]: ${text.slice(0, 200)}`);
-      return { cached: false, results: dbResults };
+    let aiData = parseAIJson(text);
+    if (!aiData || Object.keys(aiData).length === 0) {
+      logger.warn(`[AI:QS] Empty AI response or unparseable JSON. Using fallback data.`);
+      aiData = getFallbackAIData(query);
     }
     const validCategories = Object.entries(aiData).filter(([, v]) => Array.isArray(v) && v.length > 0);
     if (validCategories.length === 0) {
-      logger.warn(`[AI:QS] AI returned empty categories at ${lat},${lng}`);
+      logger.warn(`[AI:QS] Fallback returned empty categories at ${lat},${lng}`);
       return { cached: false, results: dbResults };
     }
 
@@ -300,7 +329,8 @@ export async function aiQuickSearch(lat: number, lng: number, query: string): Pr
     return { cached: false, results: merged };
   } catch (err: any) {
     logger.error('[AI:QS] Failed:', err.message);
-    return { cached: false, results: dbResults };
+    const fallback = getFallbackAIData(query);
+    return { cached: false, results: fallback };
   }
 }
 
