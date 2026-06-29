@@ -43,27 +43,57 @@ publicSearchRouter.get('/stats', async (_req, res) => {
 // ──────────────────────────────────────────────────────────────
 publicSearchRouter.get('/listings/nearby', async (req, res) => {
   try {
-    const { lat, lng, radius='15', type='', mode='', limit='30' } = req.query as Record<string,string>;
+    const { lat, lng, radius='50', type='', q='', search='' } = req.query as Record<string,string>;
     if (!lat || !lng) return fail(res, 'lat and lng required');
     const latF = parseFloat(lat); const lngF = parseFloat(lng);
-    const radiusKm = Math.min(100, parseFloat(radius)||15);
-    const limitNum = Math.min(50, parseInt(limit)||30);
+    const radiusLimit = parseFloat(radius) || 50.0;
+    const queryStr = (type || q || search || '').trim();
 
-    const conditions = ['is_active=TRUE', 'lat IS NOT NULL', 'lng IS NOT NULL',
-      `(6371 * acos(cos(radians(${latF})) * cos(radians(lat)) * cos(radians(lng) - radians(${lngF})) + sin(radians(${latF})) * sin(radians(lat)))) <= ${radiusKm}`
-    ];
-    const vals: any[] = [];
-    let i = 1;
-    if (type) { conditions.push(`type = $${i++}`); vals.push(type); }
-    if (mode) { conditions.push(`mode = $${i++}`); vals.push(mode); }
-    vals.push(limitNum);
-    const rows = await query<any>(
-      `SELECT id, type, mode, name, phone, city, state, description, rate_info, discount, services, available_now, lat, lng,
-              ROUND((6371 * acos(cos(radians(${latF})) * cos(radians(lat)) * cos(radians(lng) - radians(${lngF})) + sin(radians(${latF})) * sin(radians(lat))))::numeric, 2) AS dist_km
-       FROM public_listings WHERE ${conditions.join(' AND ')}
-       ORDER BY dist_km ASC LIMIT $${i}`, vals
+    const localListings = await query<any>(
+      `SELECT id, name, type, address, city, lat, lng, phone, rate_info, discount,
+              available_now, description,
+              ROUND((6371 * acos(LEAST(1,
+                cos(radians($1)) * cos(radians(lat)) *
+                cos(radians(lng) - radians($2)) +
+                sin(radians($1)) * sin(radians(lat))
+              )))::numeric, 2) AS dist_km
+       FROM public_listings
+       WHERE is_active = TRUE AND lat IS NOT NULL AND lng IS NOT NULL
+         ${queryStr ? "AND (name ILIKE $3 OR type ILIKE $3 OR description ILIKE $3)" : ""}
+         AND (6371 * acos(LEAST(1,
+               cos(radians($1)) * cos(radians(lat)) *
+               cos(radians(lng) - radians($2)) +
+               sin(radians($1)) * sin(radians(lat))
+             ))) < $4
+       ORDER BY dist_km LIMIT 50`,
+      queryStr ? [latF, lngF, `%${queryStr}%`, radiusLimit] : [latF, lngF, radiusLimit]
     );
-    ok(res, rows, { total: rows.length, lat: latF, lng: lngF, radius: radiusKm });
+
+    const localStores = await query<any>(
+      `SELECT s.id, s.name, s.city, s.address, s.lat, s.lng, t.name AS owner,
+              ROUND((6371 * acos(LEAST(1,
+                cos(radians($1)) * cos(radians(s.lat)) *
+                cos(radians(s.lng) - radians($2)) +
+                sin(radians($1)) * sin(radians(s.lat))
+              )))::numeric, 2) AS dist_km
+       FROM stores s JOIN tenants t ON t.id = s.tenant_id
+       WHERE s.is_active = TRUE AND s.lat IS NOT NULL AND s.lng IS NOT NULL
+         ${queryStr ? "AND (s.name ILIKE $3 OR s.address ILIKE $3)" : ""}
+         AND (6371 * acos(LEAST(1,
+               cos(radians($1)) * cos(radians(s.lat)) *
+               cos(radians(s.lng) - radians($2)) +
+               sin(radians($1)) * sin(radians(s.lat))
+             ))) < $4
+       ORDER BY dist_km LIMIT 50`,
+      queryStr ? [latF, lngF, `%${queryStr}%`, radiusLimit] : [latF, lngF, radiusLimit]
+    );
+
+    const localMerged = [
+      ...localListings.map((l: any) => ({ ...l, source: 'community_listing' })),
+      ...localStores.map((s: any) => ({ ...s, type: 'shop', source: 'store' }))
+    ].sort((a, b) => a.dist_km - b.dist_km);
+
+    ok(res, localMerged, { total: localMerged.length, lat: latF, lng: lngF, radius: radiusLimit });
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
@@ -869,48 +899,58 @@ publicSearchRouter.get('/quicksearch', async (req, res) => {
       return ok(res, { local: localMerged, ai: aiResults }, { source: cached ? 'cache' : 'ai', lat: latF, lng: lngF });
     }
 
-    // 2. Check cache (memory first, then DB)
-    const { hit, data } = await getCachedQuickSearch(latF, lngF);
+    // 2. Local DB query search (bypasses AI flow completely for non-AI requests)
+    const queryStr = (category || q || '').trim();
+    const radiusLimit = parseFloat(req.query.radius as string) || 50.0;
 
-    // 3. Cache miss for a specific category → live fetch (DB/Overpass)
-    if (category && (!hit || !(data[category]?.length))) {
-      try {
-        const liveItems = await fetchAndCacheCategory(latF, lngF, category);
-        if (liveItems.length > 0) {
-          return ok(res, { [category]: liveItems }, { source: 'live', lat: latF, lng: lngF });
-        }
-      } catch (e: any) {
-        logger.warn(`Live fetch failed for ${category}: ${e.message}`);
-      }
+    const localListings = await query<any>(
+      `SELECT id, name, type, address, city, lat, lng, phone, rate_info, discount,
+              available_now, description,
+              ROUND((6371 * acos(LEAST(1,
+                cos(radians($1)) * cos(radians(lat)) *
+                cos(radians(lng) - radians($2)) +
+                sin(radians($1)) * sin(radians(lat))
+              )))::numeric, 2) AS dist_km
+       FROM public_listings
+       WHERE is_active = TRUE AND lat IS NOT NULL AND lng IS NOT NULL
+         AND (name ILIKE $3 OR type ILIKE $3 OR description ILIKE $3)
+         AND (6371 * acos(LEAST(1,
+               cos(radians($1)) * cos(radians(lat)) *
+               cos(radians(lng) - radians($2)) +
+               sin(radians($1)) * sin(radians(lat))
+             ))) < $4
+       ORDER BY dist_km LIMIT 50`,
+      [latF, lngF, `%${queryStr}%`, radiusLimit]
+    );
+
+    const localStores = await query<any>(
+      `SELECT s.id, s.name, s.city, s.address, s.lat, s.lng, t.name AS owner,
+              ROUND((6371 * acos(LEAST(1,
+                cos(radians($1)) * cos(radians(s.lat)) *
+                cos(radians(s.lng) - radians($2)) +
+                sin(radians($1)) * sin(radians(s.lat))
+              )))::numeric, 2) AS dist_km
+       FROM stores s JOIN tenants t ON t.id = s.tenant_id
+       WHERE s.is_active = TRUE AND s.lat IS NOT NULL AND s.lng IS NOT NULL
+         AND (s.name ILIKE $3 OR s.address ILIKE $3)
+         AND (6371 * acos(LEAST(1,
+               cos(radians($1)) * cos(radians(s.lat)) *
+               cos(radians(s.lng) - radians($2)) +
+               sin(radians($1)) * sin(radians(s.lat))
+             ))) < $4
+       ORDER BY dist_km LIMIT 50`,
+      [latF, lngF, `%${queryStr}%`, radiusLimit]
+    );
+
+    const localMerged = [
+      ...localListings.map((l: any) => ({ ...l, source: 'community_listing' })),
+      ...localStores.map((s: any) => ({ ...s, type: 'shop', source: 'store' }))
+    ].sort((a, b) => a.dist_km - b.dist_km);
+
+    if (category) {
+      return ok(res, { [category]: localMerged }, { source: 'db', lat: latF, lng: lngF });
     }
-
-    // 4. Full cache miss (no data at all) → call AI synchronously and cache result
-    const hasData = hit && Object.values(data).some(arr => arr.length > 0);
-    if (!hasData) {
-      const query = q.trim() || 'restaurants shops hospitals pharmacies schools banks atm temples hotels nearby';
-      try {
-        const { cached, results } = await aiQuickSearch(latF, lngF, query);
-        const hasResults = Object.values(results).some(arr => arr.length > 0);
-        if (hasResults) {
-          const filtered = category ? { [category]: results[category] || [] } : results;
-          return ok(res, filtered, { source: cached ? 'cache' : 'ai', lat: latF, lng: lngF });
-        }
-      } catch (e: any) {
-        logger.warn(`[QS] AI fallback failed: ${e.message}`);
-      }
-      // AI failed — schedule background enrichment for next request and return empty
-      triggerAIEnrichmentAsync(latF, lngF);
-      return ok(res, {}, { source: 'miss', lat: latF, lng: lngF });
-    }
-
-    // 5. Partial cache hit — trigger background AI enrichment to fill gaps
-    const totalItems = Object.values(data).reduce((s, arr) => s + arr.length, 0);
-    if (totalItems < 5) {
-      triggerAIEnrichmentAsync(latF, lngF);
-    }
-
-    const filtered = category ? { [category]: data[category] || [] } : data;
-    return ok(res, filtered, { source: hit ? 'cache' : 'miss', lat: latF, lng: lngF });
+    return ok(res, { local: localMerged }, { source: 'db', lat: latF, lng: lngF });
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
