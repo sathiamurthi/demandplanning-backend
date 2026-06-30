@@ -61,9 +61,9 @@ couponsRouter.post('/', requireMinRole('owner'), async (req, res) => {
 
     // Auto-generate coupon code if not provided
     let couponCode = body.code;
+    let prefix = '';
     if (!couponCode) {
       // If store_id provided, fetch store name
-      let prefix = '';
       if (body.store_id) {
         const store = await queryOne<any>('SELECT name FROM stores WHERE id=$1', [body.store_id]);
         if (store && store.name) {
