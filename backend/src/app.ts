@@ -49,6 +49,7 @@ import EntityRouter from './modules/core/api/generic.router';
 import dashboardRouter from './dashboard/route/route';
 import { swaggerRouter } from './config/swagger';
 import { publicSearchRouter } from './modules/public/search.service';
+import { hotelResponseRouter } from './modules/auth/hotel-response.service';
 import { teaRouter } from './modules/tea/tea.service';
 import { waWebhookRouter } from './modules/whatsapp/whatsapp.webhook';
 
@@ -129,6 +130,7 @@ app.use('/v1/ext/tenant', interfaceRouter_Tenant);
 // ── PUBLIC ───────────────────────────────────────────────────
 app.use('/v1/ext/stores', publicRouter);
 app.use('/v1/public', publicSearchRouter);
+app.use('/v1/public/hotel-response', hotelResponseRouter);
 
 app.use('/v1/auth',       authRouter);
 app.use('/v1/units',      unitsRouter);

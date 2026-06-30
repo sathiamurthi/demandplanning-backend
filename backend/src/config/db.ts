@@ -2204,5 +2204,31 @@ END $$;
         ALTER TABLE sales ADD COLUMN IF NOT EXISTS coupon_id UUID REFERENCES coupons(id) ON DELETE SET NULL;
       `
     },
+    {
+      name: '056_hotel_outreaches',
+      sql: `
+        CREATE TABLE IF NOT EXISTS hotel_outreaches (
+          id                 UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          token              UUID         UNIQUE NOT NULL DEFAULT uuid_generate_v4(),
+          inquiry_id         TEXT         NOT NULL,
+          hotel_name         TEXT         NOT NULL,
+          hotel_email        TEXT,
+          hotel_phone        TEXT,
+          city               TEXT,
+          inquiry_snapshot   JSONB        NOT NULL DEFAULT '{}',
+          status             TEXT         NOT NULL DEFAULT 'Sent'
+                                          CHECK (status IN ('Sent','Viewed','Responded')),
+          hotel_action       TEXT         CHECK (hotel_action IN ('Accept','Quote','Hold','Reject','Future')),
+          hotel_quote        NUMERIC(12,2),
+          hotel_message      TEXT,
+          hotel_contact_name TEXT,
+          responded_at       TIMESTAMPTZ,
+          created_at         TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at         TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_hotel_outreaches_token      ON hotel_outreaches(token);
+        CREATE INDEX IF NOT EXISTS idx_hotel_outreaches_inquiry_id ON hotel_outreaches(inquiry_id);
+      `
+    },
   ];
 }
