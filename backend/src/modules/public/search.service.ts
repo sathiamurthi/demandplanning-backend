@@ -148,7 +148,7 @@ publicSearchRouter.get('/stores', async (req, res) => {
     let i = 1;
 
     if (search) {
-      conditions.push(`(s.name ILIKE $${i} OR t.name ILIKE $${i} OR s.city ILIKE $${i} OR s.address ILIKE $${i})`);
+      conditions.push(`(s.name ILIKE $${i} OR t.name ILIKE $${i} OR s.city ILIKE $${i} OR s.address ILIKE $${i} OR s.owner_name ILIKE $${i})`);
       vals.push(`%${search}%`);
       i++;
     }
