@@ -12,3 +12,5 @@ package-lock.json
 Dockerfile
 backend/Dockerfile
 scripts/.env.deploy
+
+.vercel
