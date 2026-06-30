@@ -18,10 +18,14 @@ function fail(res: any, msg: string, status = 400) {
 }
 
 async function generateSaleNumber(storeId: string, type: SaleType): Promise<string> {
-  const prefix = type === 'bulk' ? 'B' : 'S';
-  const [{ count }] = await query<any>('SELECT COUNT(*)::int+1 as count FROM sales WHERE store_id=$1',[storeId]);
+  const typePrefix = type === 'bulk' ? 'B' : 'S';
+  const store = await queryOne<any>('SELECT code, name FROM stores WHERE id=$1', [storeId]);
+  const storeCode = store?.code
+    ? store.code.toUpperCase()
+    : (store?.name || 'STR').replace(/\s+/g, '').substring(0, 4).toUpperCase();
+  const [{ count }] = await query<any>('SELECT COUNT(*)::int+1 as count FROM sales WHERE store_id=$1', [storeId]);
   const year = new Date().getFullYear();
-  return `${prefix}-${year}-${String(count).padStart(4,'0')}`;
+  return `${storeCode}-${typePrefix}${year}-${String(count).padStart(4, '0')}`;
 }
 
 // ── Commands ─────────────────────────────────────────────────
