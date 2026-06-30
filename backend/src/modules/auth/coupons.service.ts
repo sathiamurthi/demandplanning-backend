@@ -16,7 +16,7 @@ function fail(res: any, msg: string, status = 400) {
 
 // ── Schemas ──────────────────────────────────────────────────
 const CreateCouponSchema = z.object({
-  code:            z.string().min(3).max(30).toUpperCase(),
+  code:            z.string().min(3).max(30).toUpperCase().optional(),
   description:     z.string().optional(),
   discount_type:   z.enum(['percentage', 'fixed']),
   discount_value:  z.number().positive(),
@@ -54,20 +54,39 @@ couponsRouter.get('/', requireMinRole('manager'), async (req, res) => {
 couponsRouter.post('/', requireMinRole('owner'), async (req, res) => {
   try {
     const { tenantId } = req.params;
-    const body = CreateCouponSchema.parse(req.body);
+    const bodyRaw = req.body;
+    // Parse with schema allowing optional code
+    const body = CreateCouponSchema.parse(bodyRaw);
     const user = (req as any).user;
 
-    // Check code uniqueness within tenant
-    const existing = await queryOne<any>(
-      'SELECT id FROM coupons WHERE tenant_id=$1 AND code=$2', [tenantId, body.code]
-    );
-    if (existing) { fail(res, `Coupon code "${body.code}" already exists`); return; }
+    // Auto-generate coupon code if not provided
+    let couponCode = body.code;
+    if (!couponCode) {
+      // If store_id provided, fetch store name
+      let prefix = '';
+      if (body.store_id) {
+        const store = await queryOne<any>('SELECT name FROM stores WHERE id=$1', [body.store_id]);
+        if (store && store.name) {
+          prefix = store.name.replace(/\s+/g, '').substring(0, 3).toUpperCase();
+        }
+      }
+      const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase();
+      couponCode = `${prefix}${randomPart}`;
+    }
+
+    // Ensure uniqueness within tenant (loop if collision)
+    let existing = await queryOne<any>('SELECT id FROM coupons WHERE tenant_id=$1 AND code=$2', [tenantId, couponCode]);
+    while (existing) {
+      const randomPart = Math.random().toString(36).substring(2, 7).toUpperCase();
+      couponCode = `${prefix}${randomPart}`;
+      existing = await queryOne<any>('SELECT id FROM coupons WHERE tenant_id=$1 AND code=$2', [tenantId, couponCode]);
+    }
 
     const [row] = await query<any>(
       `INSERT INTO coupons (tenant_id, store_id, code, description, discount_type, discount_value,
         min_order_value, max_discount, usage_limit, valid_from, valid_to, is_active, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [tenantId, body.store_id || null, body.code, body.description || null,
+      [tenantId, body.store_id || null, couponCode, body.description || null,
        body.discount_type, body.discount_value,
        body.min_order_value ?? 0, body.max_discount ?? null,
        body.usage_limit ?? null, body.valid_from ?? null, body.valid_to ?? null,

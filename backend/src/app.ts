@@ -142,15 +142,15 @@ app.use('/v1/entity/tenants/:tenantId',                   EntityRouter);
 
 app.use('/v1/tenants/:tenantId/stores',               storeRouter);
 
-// ── PROTECTED ────────────────────────────────────────────────
-app.use('/v1/tenants',                                tenantRouter);
+// ── PROTECTED — specific tenant sub-routes first, then general tenantRouter ──
+app.use('/v1/tenants/:tenantId/coupons',              couponsRouter);          // ← BEFORE tenantRouter
 app.use('/v1/tenants/:tenantId/users',                usersRouter);
 app.use('/v1/tenants/:tenantId/categories',           categoryRouter);
 app.use('/v1/tenants/:tenantId/suppliers',            suppliersRouter);
 app.use('/v1/tenants/:tenantId/purchase-orders',     purchaseOrdersRouter);
 app.use('/v1/tenants/:tenantId/stores/:storeId/items',   itemRouter);
+app.use('/v1/tenants',                                tenantRouter);           // ← AFTER specifics
 app.use('/v1/stores/:storeId/sales',   authMiddleware, salesRouter);
-app.use('/v1/tenants/:tenantId/coupons', couponsRouter);
 app.use('/v1/stores/:storeId/report',          authMiddleware, aiRouter);
 app.use('/v1/tenants/:tenantId/ai-settings',   aiSettingsRouter);
 app.use('/v1/alerts',                  alertRouter);
