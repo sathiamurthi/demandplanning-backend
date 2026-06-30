@@ -28,7 +28,9 @@ services:
       - key: CLAUDE_API_KEY
         sync: false
       - key: FRONTEND_URL
-        value: https://dplan-ebon.vercel.app
+        value: https://demandgenius.vercel.app,https://dplan-ebon.vercel.app
+      - key: PUBLIC_FRONTEND_URL
+        value: https://demandgenius.vercel.app
       - key: ENABLE_AI
         value: "true"
       - key: ENABLE_BILLING
