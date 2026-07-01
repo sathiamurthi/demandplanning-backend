@@ -642,7 +642,10 @@ const listingCreateLimiter = rateLimit({ windowMs: 60*1000, max: 5, message: { s
 
 publicSearchRouter.get('/listings', async (req, res) => {
   try {
-    const { type='', city='', search='', available='', source='', verified='', page='1', limit='20' } = req.query as Record<string,string>;
+    const {
+      type='', city='', search='', available='', mode='',
+      source='', verified='', page='1', limit='20',
+    } = req.query as Record<string,string>;
     const pageNum  = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, parseInt(limit) || 20);
     const offset   = (pageNum - 1) * limitNum;
@@ -651,27 +654,37 @@ publicSearchRouter.get('/listings', async (req, res) => {
     const vals: any[] = [];
     let i = 1;
 
-    if (type)     { conditions.push(`type ILIKE $${i++}`);       vals.push(`%${type}%`); }
-    if (city)     { conditions.push(`city ILIKE $${i++}`);       vals.push(`%${city}%`); }
-    if (source)   { conditions.push(`source = $${i++}`);         vals.push(source); }
-    if (verified === 'true')  { conditions.push('is_verified = TRUE'); }
-    if (verified === 'false') { conditions.push('is_verified = FALSE'); }
+    if (mode)   { conditions.push(`mode = $${i++}`);             vals.push(mode); }
+    if (type)   { conditions.push(`type ILIKE $${i++}`);         vals.push(`%${type}%`); }
+    if (city)   { conditions.push(`city ILIKE $${i++}`);         vals.push(`%${city}%`); }
+    if (source) { conditions.push(`source = $${i++}`);           vals.push(source); }
+    if (verified === 'true')  conditions.push('is_verified = TRUE');
+    if (verified === 'false') conditions.push('is_verified = FALSE');
     if (search) {
-      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR address ILIKE $${i})`);
+      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i})`);
       vals.push(`%${search}%`); i++;
     }
-    if (available === 'true') { conditions.push('available_now = TRUE'); }
+    if (available === 'true') conditions.push('available_now = TRUE');
 
     const where = `WHERE ${conditions.join(' AND ')}`;
     const [countRow] = await query<any>(`SELECT COUNT(*)::int AS count FROM public_listings ${where}`, vals);
 
     vals.push(limitNum, offset);
+    // Use COALESCE for columns added in migration 057 so the query is safe even
+    // if the migration is still running (rare cold-start race condition on Render).
     const rows = await query<any>(
-      `SELECT id, type, name, phone, email, website, pincode, city, state, address, description,
-              rate_info, discount, available_now, source, is_verified, lat, lng, created_at
+      `SELECT id, type, mode, name, phone,
+              COALESCE(email, NULL)      AS email,
+              COALESCE(website, NULL)    AS website,
+              COALESCE(pincode, NULL)    AS pincode,
+              city, state, address, description,
+              rate_info, discount, services, available_now, availability,
+              COALESCE(source, 'manual') AS source,
+              COALESCE(is_verified, FALSE) AS is_verified,
+              lat, lng, created_at
        FROM public_listings
        ${where}
-       ORDER BY is_verified DESC, available_now DESC, created_at DESC
+       ORDER BY COALESCE(is_verified,FALSE) DESC, available_now DESC, created_at DESC
        LIMIT $${i} OFFSET $${i+1}`,
       vals
     );
