@@ -654,14 +654,14 @@ publicSearchRouter.get('/listings', async (req, res) => {
     const vals: any[] = [];
     let i = 1;
 
-    if (mode)   { conditions.push(`mode = $${i++}`);             vals.push(mode); }
+    if (mode)   { conditions.push(`COALESCE(mode, 'provider') = $${i++}`); vals.push(mode); }
     if (type)   { conditions.push(`type ILIKE $${i++}`);         vals.push(`%${type}%`); }
     if (city)   { conditions.push(`city ILIKE $${i++}`);         vals.push(`%${city}%`); }
     if (source) { conditions.push(`source = $${i++}`);           vals.push(source); }
     if (verified === 'true')  conditions.push('is_verified = TRUE');
     if (verified === 'false') conditions.push('is_verified = FALSE');
     if (search) {
-      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i})`);
+      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i} OR city ILIKE $${i})`);
       vals.push(`%${search}%`); i++;
     }
     if (available === 'true') conditions.push('available_now = TRUE');
