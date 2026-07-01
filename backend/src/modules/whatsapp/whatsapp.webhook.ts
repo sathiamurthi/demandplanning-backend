@@ -17,6 +17,7 @@ import crypto from 'crypto';
 import { query, queryOne } from '../../config/db';
 import { sendWhatsAppText, normalizeWhatsAppPhone } from '../../utils/whatsapp';
 import { metaConfig, botFooter } from './meta.config';
+import { handleVendorWorkflowReply } from '../workflow/workflow.service';
 import bcrypt from 'bcryptjs';
 
 export const waWebhookRouter = Router();
@@ -132,6 +133,11 @@ async function handleMessage(waPhone: string, text: string) {
     await sendWhatsAppText(waPhone, helpText());
     return;
   }
+
+  // ── Vendor workflow reply: YES / NO / COMMENT <msg> ──
+  // Check before everything else so vendor replies are caught even without a session
+  const handledByWorkflow = await handleVendorWorkflowReply(waPhone, text);
+  if (handledByWorkflow) return;
 
   // ── Explore / stores (public, no login needed) ──
   if (lower === 'stores' || lower === 'explore' || lower.startsWith('stores ')) {

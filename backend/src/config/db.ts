@@ -2244,5 +2244,72 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_public_listings_verified ON public_listings(is_verified);
       `
     },
+    {
+      name: '058_workflow_notifications',
+      sql: `
+        -- Workflow requests: booking/inquiry from a seeker
+        CREATE TABLE IF NOT EXISTS workflow_requests (
+          id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          type          VARCHAR(50)  NOT NULL DEFAULT 'booking',
+          title         TEXT         NOT NULL,
+          description   TEXT,
+          city          VARCHAR(100),
+          vendor_type   VARCHAR(100),
+          date_start    DATE,
+          date_end      DATE,
+          budget        NUMERIC(12,2),
+          seeker_name   VARCHAR(200),
+          seeker_phone  VARCHAR(30),
+          seeker_email  VARCHAR(200),
+          status        VARCHAR(50)  NOT NULL DEFAULT 'pending',
+          matched_count INT          DEFAULT 0,
+          notes         TEXT,
+          created_at    TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_wf_req_phone  ON workflow_requests(seeker_phone);
+        CREATE INDEX IF NOT EXISTS idx_wf_req_status ON workflow_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_wf_req_type   ON workflow_requests(vendor_type, city);
+
+        -- Vendors matched and notified for each request
+        CREATE TABLE IF NOT EXISTS workflow_vendor_matches (
+          id              UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          request_id      UUID         NOT NULL REFERENCES workflow_requests(id) ON DELETE CASCADE,
+          vendor_type     VARCHAR(20)  NOT NULL DEFAULT 'listing',
+          vendor_id       TEXT         NOT NULL,
+          vendor_name     VARCHAR(200),
+          vendor_phone    VARCHAR(30),
+          vendor_city     VARCHAR(100),
+          wa_notified_at  TIMESTAMPTZ,
+          status          VARCHAR(50)  NOT NULL DEFAULT 'pending',
+          notes           TEXT,
+          quote_amount    NUMERIC(12,2),
+          responded_at    TIMESTAMPTZ,
+          created_at      TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_wf_match_request ON workflow_vendor_matches(request_id);
+        CREATE INDEX IF NOT EXISTS idx_wf_match_phone   ON workflow_vendor_matches(vendor_phone);
+        CREATE INDEX IF NOT EXISTS idx_wf_match_status  ON workflow_vendor_matches(status);
+
+        -- In-app notifications (phone-based, works for both logged-in and public users)
+        CREATE TABLE IF NOT EXISTS notifications (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          phone        VARCHAR(30),
+          type         VARCHAR(50)  NOT NULL,
+          title        TEXT         NOT NULL,
+          body         TEXT,
+          action_type  VARCHAR(50),
+          action_data  JSONB        DEFAULT '{}',
+          ref_type     VARCHAR(50),
+          ref_id       TEXT,
+          is_read      BOOLEAN      DEFAULT FALSE,
+          read_at      TIMESTAMPTZ,
+          created_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_notif_phone  ON notifications(phone);
+        CREATE INDEX IF NOT EXISTS idx_notif_read   ON notifications(phone, is_read);
+        CREATE INDEX IF NOT EXISTS idx_notif_ref    ON notifications(ref_type, ref_id);
+      `
+    },
   ];
 }
