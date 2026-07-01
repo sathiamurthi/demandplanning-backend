@@ -148,9 +148,16 @@ publicSearchRouter.get('/stores', async (req, res) => {
     let i = 1;
 
     if (search) {
-      conditions.push(`(s.name ILIKE $${i} OR t.name ILIKE $${i} OR s.city ILIKE $${i} OR s.address ILIKE $${i} OR s.owner_name ILIKE $${i} OR ic.display_name ILIKE $${i} OR ic.industry_id ILIKE $${i})`);
-      vals.push(`%${search}%`);
-      i++;
+      const stem = search.toLowerCase().endsWith('s') && search.length > 3 ? search.slice(0,-1) : null;
+      const sp = `%${search}%`;
+      if (stem) {
+        const st = `%${stem}%`;
+        conditions.push(`(s.name ILIKE $${i} OR t.name ILIKE $${i} OR s.city ILIKE $${i} OR s.address ILIKE $${i} OR s.owner_name ILIKE $${i} OR ic.display_name ILIKE $${i} OR ic.industry_id ILIKE $${i} OR ic.display_name ILIKE $${i+1} OR ic.industry_id ILIKE $${i+1} OR s.name ILIKE $${i+1})`);
+        vals.push(sp, st); i += 2;
+      } else {
+        conditions.push(`(s.name ILIKE $${i} OR t.name ILIKE $${i} OR s.city ILIKE $${i} OR s.address ILIKE $${i} OR s.owner_name ILIKE $${i} OR ic.display_name ILIKE $${i} OR ic.industry_id ILIKE $${i})`);
+        vals.push(sp); i++;
+      }
     }
 
     if (industry) {
@@ -159,8 +166,9 @@ publicSearchRouter.get('/stores', async (req, res) => {
     }
 
     if (city) {
-      conditions.push(`s.city ILIKE $${i++}`);
-      vals.push(`%${city}%`);
+      // Also check address so stores without explicit city field are still found
+      conditions.push(`(s.city ILIKE $${i} OR s.address ILIKE $${i})`);
+      vals.push(`%${city}%`); i++;
     }
 
     if (state) {
@@ -656,13 +664,25 @@ publicSearchRouter.get('/listings', async (req, res) => {
 
     if (mode)   { conditions.push(`COALESCE(mode, 'provider') = $${i++}`); vals.push(mode); }
     if (type)   { conditions.push(`type ILIKE $${i++}`);         vals.push(`%${type}%`); }
-    if (city)   { conditions.push(`city ILIKE $${i++}`);         vals.push(`%${city}%`); }
+    if (city)   {
+      // Also check description/address — covers records where city field is null but city name appears in description
+      conditions.push(`(city ILIKE $${i} OR description ILIKE $${i} OR address ILIKE $${i})`);
+      vals.push(`%${city}%`); i++;
+    }
     if (source) { conditions.push(`source = $${i++}`);           vals.push(source); }
     if (verified === 'true')  conditions.push('is_verified = TRUE');
     if (verified === 'false') conditions.push('is_verified = FALSE');
     if (search) {
-      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i} OR city ILIKE $${i})`);
-      vals.push(`%${search}%`); i++;
+      const stem = search.toLowerCase().endsWith('s') && search.length > 3 ? search.slice(0,-1) : null;
+      const sp = `%${search}%`;
+      if (stem) {
+        const st = `%${stem}%`;
+        conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i} OR city ILIKE $${i} OR type ILIKE $${i+1} OR name ILIKE $${i+1})`);
+        vals.push(sp, st); i += 2;
+      } else {
+        conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR rate_info ILIKE $${i} OR address ILIKE $${i} OR city ILIKE $${i})`);
+        vals.push(sp); i++;
+      }
     }
     if (available === 'true') conditions.push('available_now = TRUE');
 
