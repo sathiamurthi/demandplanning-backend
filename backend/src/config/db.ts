@@ -2230,5 +2230,19 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_hotel_outreaches_inquiry_id ON hotel_outreaches(inquiry_id);
       `
     },
+    {
+      name: '057_vendor_leads_columns',
+      sql: `
+        ALTER TABLE public_listings
+          ALTER COLUMN phone DROP NOT NULL,
+          ADD COLUMN IF NOT EXISTS email      VARCHAR(200),
+          ADD COLUMN IF NOT EXISTS website    VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS pincode    VARCHAR(20),
+          ADD COLUMN IF NOT EXISTS source     VARCHAR(30) DEFAULT 'manual',
+          ADD COLUMN IF NOT EXISTS is_verified BOOLEAN    DEFAULT FALSE;
+        CREATE INDEX IF NOT EXISTS idx_public_listings_source   ON public_listings(source);
+        CREATE INDEX IF NOT EXISTS idx_public_listings_verified ON public_listings(is_verified);
+      `
+    },
   ];
 }

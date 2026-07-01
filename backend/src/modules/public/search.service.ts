@@ -642,18 +642,24 @@ const listingCreateLimiter = rateLimit({ windowMs: 60*1000, max: 5, message: { s
 
 publicSearchRouter.get('/listings', async (req, res) => {
   try {
-    const { type='', city='', search='', available='', page='1', limit='20' } = req.query as Record<string,string>;
+    const { type='', city='', search='', available='', source='', verified='', page='1', limit='20' } = req.query as Record<string,string>;
     const pageNum  = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, parseInt(limit) || 20);
+    const limitNum = Math.min(100, parseInt(limit) || 20);
     const offset   = (pageNum - 1) * limitNum;
 
     const conditions: string[] = ['is_active = TRUE'];
     const vals: any[] = [];
     let i = 1;
 
-    if (type)   { conditions.push(`type = $${i++}`);             vals.push(type); }
-    if (city)   { conditions.push(`city ILIKE $${i++}`);         vals.push(`%${city}%`); }
-    if (search) { conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR rate_info ILIKE $${i})`); vals.push(`%${search}%`); i++; }
+    if (type)     { conditions.push(`type ILIKE $${i++}`);       vals.push(`%${type}%`); }
+    if (city)     { conditions.push(`city ILIKE $${i++}`);       vals.push(`%${city}%`); }
+    if (source)   { conditions.push(`source = $${i++}`);         vals.push(source); }
+    if (verified === 'true')  { conditions.push('is_verified = TRUE'); }
+    if (verified === 'false') { conditions.push('is_verified = FALSE'); }
+    if (search) {
+      conditions.push(`(name ILIKE $${i} OR description ILIKE $${i} OR type ILIKE $${i} OR address ILIKE $${i})`);
+      vals.push(`%${search}%`); i++;
+    }
     if (available === 'true') { conditions.push('available_now = TRUE'); }
 
     const where = `WHERE ${conditions.join(' AND ')}`;
@@ -661,11 +667,11 @@ publicSearchRouter.get('/listings', async (req, res) => {
 
     vals.push(limitNum, offset);
     const rows = await query<any>(
-      `SELECT id, type, name, phone, city, state, address, description,
-              rate_info, discount, services, available_now, availability, created_at
+      `SELECT id, type, name, phone, email, website, pincode, city, state, address, description,
+              rate_info, discount, available_now, source, is_verified, lat, lng, created_at
        FROM public_listings
        ${where}
-       ORDER BY available_now DESC, created_at DESC
+       ORDER BY is_verified DESC, available_now DESC, created_at DESC
        LIMIT $${i} OFFSET $${i+1}`,
       vals
     );
@@ -676,26 +682,139 @@ publicSearchRouter.get('/listings', async (req, res) => {
 
 // ──────────────────────────────────────────────────────────────
 // POST /v1/public/listings
-// Quick-onboard a seller or driver (rate-limited, no auth)
+// Quick-onboard a provider / batch-save AI-found vendors
+// Body can be a single object OR array of objects (batch)
 // ──────────────────────────────────────────────────────────────
-publicSearchRouter.post('/listings', listingCreateLimiter, async (req, res) => {
-  try {
-    const { type, mode='provider', name, phone, city, state, address, description, rate_info, discount, services, available_now, availability, lat, lng } = req.body;
-    if (!type?.trim()) return fail(res, 'type is required');
-    if (!name?.trim()) return fail(res, 'name is required');
-    if (!phone?.trim()) return fail(res, 'phone is required');
-    const validModes = ['provider','seeker'];
-    const safeMode = validModes.includes(mode) ? mode : 'provider';
+const listingBatchLimiter = rateLimit({ windowMs: 60*1000, max: 30, message: { success:false, error:'Too many submissions' } });
 
-    const [row] = await query<any>(
-      `INSERT INTO public_listings (type,mode,name,phone,city,state,address,description,rate_info,discount,services,available_now,availability,lat,lng)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,$14,$15)
-       RETURNING id, type, mode, name, city, available_now`,
-      [type.trim(), safeMode, name.trim(), phone.trim(), city||null, state||null, address||null, description||null,
-       rate_info||null, discount||null, JSON.stringify(services||[]), available_now!==false,
-       JSON.stringify(availability||{}), lat?parseFloat(lat):null, lng?parseFloat(lng):null]
+publicSearchRouter.post('/listings', listingBatchLimiter, async (req, res) => {
+  try {
+    const body = req.body;
+    const items: any[] = Array.isArray(body) ? body : [body];
+
+    const results: any[] = [];
+    for (const item of items.slice(0, 30)) {
+      const { type, mode='provider', name, phone='', city, state, address, description,
+              rate_info, discount, services, available_now, availability,
+              lat, lng, email, website, pincode, source='manual', is_verified=false } = item;
+      if (!type?.trim() || !name?.trim()) continue;
+
+      const validModes = ['provider','seeker'];
+      const safeMode   = validModes.includes(mode) ? mode : 'provider';
+      const safeSrc    = ['manual','ai','osm','nominatim','admin'].includes(source) ? source : 'manual';
+
+      // Upsert: if same name+type+city already exists as unverified AI, update instead of duplicate
+      const existing = await query<any>(
+        `SELECT id FROM public_listings WHERE LOWER(name)=LOWER($1) AND type ILIKE $2 AND (city ILIKE $3 OR ($3 IS NULL AND city IS NULL)) AND is_active=TRUE LIMIT 1`,
+        [name.trim(), type.trim(), city||null]
+      );
+
+      let row;
+      if (existing.length > 0) {
+        [row] = await query<any>(
+          `UPDATE public_listings
+           SET phone=COALESCE(NULLIF($2,''),phone), email=COALESCE(NULLIF($3,''),email),
+               website=COALESCE(NULLIF($4,''),website), address=COALESCE(NULLIF($5,''),address),
+               updated_at=NOW()
+           WHERE id=$1
+           RETURNING id, name, type, city, source, is_verified`,
+          [existing[0].id, phone||null, email||null, website||null, address||null]
+        );
+      } else {
+        [row] = await query<any>(
+          `INSERT INTO public_listings
+             (type,mode,name,phone,email,website,pincode,city,state,address,description,
+              rate_info,discount,services,available_now,availability,lat,lng,source,is_verified)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb,$17,$18,$19,$20)
+           RETURNING id, name, type, city, source, is_verified`,
+          [type.trim(), safeMode, name.trim(), phone||null, email||null, website||null, pincode||null,
+           city||null, state||null, address||null, description||null, rate_info||null, discount||null,
+           JSON.stringify(services||[]), available_now!==false, JSON.stringify(availability||{}),
+           lat?parseFloat(lat):null, lng?parseFloat(lng):null, safeSrc, is_verified===true]
+        );
+      }
+      if (row) results.push(row);
+    }
+    ok(res, Array.isArray(body) ? results : (results[0] || null));
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ──────────────────────────────────────────────────────────────
+// GET /v1/public/vendor-search
+// Combined search: platform stores + public listings (verified + unverified)
+// Query params: search, city, type, page, limit
+// ──────────────────────────────────────────────────────────────
+publicSearchRouter.get('/vendor-search', async (req, res) => {
+  try {
+    const { search='', city='', type='', page='1', limit='30' } = req.query as Record<string,string>;
+    const pageNum  = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, parseInt(limit) || 30);
+    const offset   = (pageNum - 1) * limitNum;
+
+    // --- Platform stores (verified tenants) ---
+    const storeConds: string[] = ['s.is_active = TRUE', 't.is_active = TRUE'];
+    const storeVals: any[] = [];
+    let si = 1;
+    const kw = search || type;
+    if (kw) {
+      storeConds.push(`(s.name ILIKE $${si} OR t.name ILIKE $${si} OR s.owner_name ILIKE $${si} OR ic.display_name ILIKE $${si} OR ic.industry_id ILIKE $${si})`);
+      storeVals.push(`%${kw}%`); si++;
+    }
+    if (city) { storeConds.push(`s.city ILIKE $${si++}`); storeVals.push(`%${city}%`); }
+
+    const stores = await query<any>(
+      `SELECT s.id, s.name AS name, t.name AS company_name, 'platform' AS source,
+              TRUE AS is_verified, ic.display_name AS type_label,
+              s.city, s.state, s.address, s.owner_name AS contact_name,
+              CASE WHEN s.phone IS NOT NULL AND s.phone<>'' THEN regexp_replace(s.phone,'.(?=..)', 'X', 'g') ELSE NULL END AS phone_masked,
+              s.phone IS NOT NULL AND s.phone<>'' AS has_phone,
+              s.email, NULL::text AS website, s.pincode, s.lat, s.lng,
+              (SELECT COUNT(*)::int FROM items it WHERE it.store_id=s.id AND it.is_active=TRUE) AS product_count
+       FROM stores s
+       JOIN tenants t ON t.id=s.tenant_id
+       LEFT JOIN tenant_industries ti ON ti.tenant_id=t.id
+       LEFT JOIN industry_configs ic ON ic.id=ti.industry_id
+       WHERE ${storeConds.join(' AND ')}
+       ORDER BY s.name ASC LIMIT 50`,
+      storeVals
     );
-    ok(res, row);
+
+    // --- Public listings (community + AI-sourced vendors) ---
+    const listConds: string[] = ['is_active = TRUE'];
+    const listVals: any[] = [];
+    let li = 1;
+    if (kw) {
+      listConds.push(`(name ILIKE $${li} OR type ILIKE $${li} OR description ILIKE $${li} OR address ILIKE $${li})`);
+      listVals.push(`%${kw}%`); li++;
+    }
+    if (city)  { listConds.push(`city ILIKE $${li++}`);   listVals.push(`%${city}%`); }
+    if (type)  { listConds.push(`type ILIKE $${li++}`);   listVals.push(`%${type}%`); }
+
+    listVals.push(limitNum, offset);
+    const listings = await query<any>(
+      `SELECT id, name, NULL AS company_name, source, is_verified,
+              type AS type_label, city, state, address,
+              NULL AS contact_name, phone AS phone_masked,
+              phone IS NOT NULL AND phone<>'' AS has_phone,
+              email, website, pincode, lat, lng, 0 AS product_count
+       FROM public_listings
+       WHERE ${listConds.join(' AND ')}
+       ORDER BY is_verified DESC, created_at DESC
+       LIMIT $${li} OFFSET $${li+1}`,
+      listVals
+    );
+
+    // Deduplicate: prefer platform store if same name+city exists
+    const seen = new Set<string>();
+    const combined: any[] = [];
+    [...stores, ...listings].forEach(r => {
+      const key = `${(r.name||'').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12)}_${(r.city||'').toLowerCase().slice(0,8)}`;
+      if (!seen.has(key)) { seen.add(key); combined.push(r); }
+    });
+
+    combined.sort((a,b) => (b.is_verified?1:0)-(a.is_verified?1:0) || a.name.localeCompare(b.name));
+
+    ok(res, combined, { total: combined.length, stores: stores.length, listings: listings.length });
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
