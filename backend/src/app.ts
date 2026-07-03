@@ -53,6 +53,7 @@ import { hotelResponseRouter } from './modules/auth/hotel-response.service';
 import { teaRouter } from './modules/tea/tea.service';
 import { waWebhookRouter } from './modules/whatsapp/whatsapp.webhook';
 import { workflowRouter } from './modules/workflow/workflow.service';
+import { notifySettingsRouter } from './modules/workflow/notify-settings.service';
 
 // ── Create app ───────────────────────────────────────────────
 export const app = express();
@@ -133,6 +134,7 @@ app.use('/v1/ext/stores', publicRouter);
 app.use('/v1/public', publicSearchRouter);
 app.use('/v1/public/hotel-response', hotelResponseRouter);
 app.use('/v1/public', workflowRouter);
+app.use('/v1/public/notify-settings', notifySettingsRouter);
 
 app.use('/v1/auth',       authRouter);
 app.use('/v1/units',      unitsRouter);

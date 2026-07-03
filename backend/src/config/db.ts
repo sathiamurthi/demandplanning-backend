@@ -2245,6 +2245,40 @@ END $$;
       `
     },
     {
+      name: '059_otp_notification_prefs',
+      sql: `
+        -- OTP verification codes for WhatsApp + Email
+        CREATE TABLE IF NOT EXISTS otp_verifications (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          type         VARCHAR(20)  NOT NULL CHECK (type IN ('whatsapp','email')),
+          identifier   VARCHAR(200) NOT NULL,
+          otp_code     VARCHAR(10)  NOT NULL,
+          guest_id     VARCHAR(100),
+          expires_at   TIMESTAMPTZ  NOT NULL,
+          verified_at  TIMESTAMPTZ,
+          created_at   TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(type, identifier)
+        );
+        CREATE INDEX IF NOT EXISTS idx_otp_identifier ON otp_verifications(type, identifier);
+
+        -- Verified notification preferences per guest
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+          id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          guest_id             VARCHAR(100) NOT NULL UNIQUE,
+          whatsapp_phone       VARCHAR(30),
+          whatsapp_verified    BOOLEAN      DEFAULT FALSE,
+          whatsapp_verified_at TIMESTAMPTZ,
+          email                VARCHAR(200),
+          email_verified       BOOLEAN      DEFAULT FALSE,
+          email_verified_at    TIMESTAMPTZ,
+          created_at           TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at           TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_notif_prefs_guest ON notification_preferences(guest_id);
+        CREATE INDEX IF NOT EXISTS idx_notif_prefs_phone ON notification_preferences(whatsapp_phone) WHERE whatsapp_verified = TRUE;
+      `
+    },
+    {
       name: '058_workflow_notifications',
       sql: `
         -- Workflow requests: booking/inquiry from a seeker

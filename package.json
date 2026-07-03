@@ -21,6 +21,7 @@
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^6.9.16",
     "pg": "^8.20.0",
+    "puppeteer": "^24.43.1",
     "redis": "^5.11.0",
     "slugify": "^1.6.9",
     "uuid": "^8.3.2",
