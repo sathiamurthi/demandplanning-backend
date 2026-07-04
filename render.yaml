@@ -30,7 +30,7 @@ services:
       - key: FRONTEND_URL
         value: https://demandgenius.vercel.app,https://dplan-ebon.vercel.app
       - key: PUBLIC_FRONTEND_URL
-        value: https://demandgenius.vercel.app
+        value: https://dplan-ebon.vercel.app
       - key: ENABLE_AI
         value: "true"
       - key: ENABLE_BILLING
