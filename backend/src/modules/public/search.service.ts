@@ -734,9 +734,11 @@ publicSearchRouter.post('/listings', listingBatchLimiter, async (req, res) => {
 
       const validModes = ['provider','seeker'];
       const safeMode   = validModes.includes(mode) ? mode : 'provider';
-      const safeSrc    = ['manual','ai','osm','nominatim','admin'].includes(source) ? source : 'manual';
+      const isAppSrc   = source === 'app';
+      const safeSrc    = ['manual','ai','osm','nominatim','admin','app'].includes(source) ? source : 'manual';
+      const safeVerified = is_verified === true;
 
-      // Upsert: if same name+type+city already exists as unverified AI, update instead of duplicate
+      // Upsert: if same name+type+city already exists, update instead of duplicate
       const existing = await query<any>(
         `SELECT id FROM public_listings WHERE LOWER(name)=LOWER($1) AND type ILIKE $2 AND (city ILIKE $3 OR ($3 IS NULL AND city IS NULL)) AND is_active=TRUE LIMIT 1`,
         [name.trim(), type.trim(), city||null]
@@ -744,14 +746,18 @@ publicSearchRouter.post('/listings', listingBatchLimiter, async (req, res) => {
 
       let row;
       if (existing.length > 0) {
+        // When re-registering from the app, upgrade source + is_verified on the existing record
         [row] = await query<any>(
           `UPDATE public_listings
            SET phone=COALESCE(NULLIF($2,''),phone), email=COALESCE(NULLIF($3,''),email),
                website=COALESCE(NULLIF($4,''),website), address=COALESCE(NULLIF($5,''),address),
+               ${isAppSrc ? 'source=$6, is_verified=$7,' : ''}
                updated_at=NOW()
            WHERE id=$1
            RETURNING id, name, type, city, source, is_verified`,
-          [existing[0].id, phone||null, email||null, website||null, address||null]
+          isAppSrc
+            ? [existing[0].id, phone||null, email||null, website||null, address||null, safeSrc, safeVerified]
+            : [existing[0].id, phone||null, email||null, website||null, address||null]
         );
       } else {
         [row] = await query<any>(
