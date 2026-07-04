@@ -5,6 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { query, queryOne } from '../../config/db';
+import { sendWhatsAppText } from '../../utils/whatsapp';
 
 function ok(res: any, data: any, status = 200) {
   res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
@@ -37,7 +38,35 @@ hotelResponseRouter.post('/outreach', async (req, res) => {
         JSON.stringify(inquiry_snapshot || {}),
       ]
     );
-    ok(res, row, 201);
+
+    // Send WhatsApp message directly via Meta Cloud API if configured
+    let wa_sent = false;
+    let wa_message_id: string | undefined;
+    if (hotel_phone?.trim()) {
+      const frontendUrl = (process.env.PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || 'https://dplan-ebon.vercel.app').split(',')[0].trim();
+      const responseUrl = `${frontendUrl}/hotel-respond?token=${row.token}`;
+      const snap = inquiry_snapshot || {};
+      const lines = [
+        `*Service Inquiry — ${inquiry_id}*`,
+        ``,
+        `Hello ${hotel_name.trim()}, a customer is looking for *${snap.serviceType || 'services'}* in *${snap.city || city || ''}*.`,
+        snap.checkIn ? `📅 ${snap.checkIn}${snap.checkOut ? ` → ${snap.checkOut}` : ''}` : '',
+        snap.guests  ? `👥 ${snap.guestLabel || 'Guests'}: ${snap.guests}` : '',
+        snap.budget  ? `💰 Budget: Rs.${snap.budget}${snap.budgetUnit || ''}` : '',
+        snap.requirements ? `📝 Note: ${snap.requirements}` : '',
+        ``,
+        `*Tap to confirm availability:*`,
+        responseUrl,
+        ``,
+        `_Powered by DemandGenius_`,
+      ].filter(Boolean).join('\n');
+
+      const result = await sendWhatsAppText(hotel_phone.trim(), lines);
+      wa_sent = result.sent;
+      wa_message_id = result.messageId;
+    }
+
+    ok(res, { ...row, wa_sent, wa_message_id }, 201);
   } catch (e: any) { fail(res, e.message); }
 });
 
@@ -132,7 +161,7 @@ hotelResponseRouter.post('/:token/respond', async (req, res) => {
     ok(res, row);
   } catch (e: any) {
     if (e.message?.includes('invalid input syntax')) { fail(res, 'Invalid link', 400); return; }
-    if (e instanceof z.ZodError) { fail(res, e.errors[0]?.message || 'Validation error'); return; }
+    if (e instanceof z.ZodError) { fail(res, (e.issues?.[0]?.message) || 'Validation error'); return; }
     fail(res, e.message);
   }
 });
