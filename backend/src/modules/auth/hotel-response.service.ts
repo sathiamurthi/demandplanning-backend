@@ -16,6 +16,21 @@ function fail(res: any, msg: string, status = 400) {
 
 export const hotelResponseRouter = Router();
 
+// ── GET /v1/public/hotel-response/wa-status  (diagnostic — no secrets exposed)
+hotelResponseRouter.get('/wa-status', (_req, res) => {
+  const enabled   = process.env.ENABLE_WHATSAPP === 'true';
+  const hasPhoneId = !!process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const hasToken   = !!process.env.WHATSAPP_ACCESS_TOKEN;
+  ok(res, {
+    configured: enabled && hasPhoneId && hasToken,
+    enable_whatsapp: process.env.ENABLE_WHATSAPP,
+    has_phone_number_id: hasPhoneId,
+    has_access_token: hasToken,
+    api_version: process.env.WHATSAPP_API_VERSION || 'v21.0 (default)',
+    phone_number_id_prefix: process.env.WHATSAPP_PHONE_NUMBER_ID?.slice(0, 6) || null,
+  });
+});
+
 // ── POST /v1/public/hotel-response/outreach
 // Customer creates an outreach record → gets back a unique token → embeds in email/WA link
 hotelResponseRouter.post('/outreach', async (req, res) => {
