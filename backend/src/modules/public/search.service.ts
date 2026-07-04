@@ -746,17 +746,17 @@ publicSearchRouter.post('/listings', listingBatchLimiter, async (req, res) => {
 
       let row;
       if (existing.length > 0) {
-        // When re-registering from the app, upgrade source + is_verified on the existing record
+        // When re-registering from the app, upgrade source + is_verified + mode on the existing record
         [row] = await query<any>(
           `UPDATE public_listings
            SET phone=COALESCE(NULLIF($2,''),phone), email=COALESCE(NULLIF($3,''),email),
                website=COALESCE(NULLIF($4,''),website), address=COALESCE(NULLIF($5,''),address),
-               ${isAppSrc ? 'source=$6, is_verified=$7,' : ''}
+               ${isAppSrc ? 'source=$6, is_verified=$7, mode=$8,' : ''}
                updated_at=NOW()
            WHERE id=$1
            RETURNING id, name, type, city, source, is_verified`,
           isAppSrc
-            ? [existing[0].id, phone||null, email||null, website||null, address||null, safeSrc, safeVerified]
+            ? [existing[0].id, phone||null, email||null, website||null, address||null, safeSrc, safeVerified, safeMode]
             : [existing[0].id, phone||null, email||null, website||null, address||null]
         );
       } else {
