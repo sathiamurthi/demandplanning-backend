@@ -27,13 +27,30 @@ function fail(res: any, msg: string, status = 400) {
 // ──────────────────────────────────────────────────────────────
 publicSearchRouter.get('/stats', async (_req, res) => {
   try {
-    const [[storeRow], [productRow], [tenantRow], [contributorRow]] = await Promise.all([
+    const [
+      [storeRow], [productRow], [tenantRow], [contributorRow],
+      [seekerRow], [providerRow],
+      [dauRow], [totalRow],
+    ] = await Promise.all([
       query<any>('SELECT COUNT(*)::int AS count FROM stores s JOIN tenants t ON t.id = s.tenant_id WHERE s.is_active=TRUE AND t.is_active=TRUE'),
       query<any>('SELECT COUNT(*)::int AS count FROM items i JOIN stores s ON s.id = i.store_id JOIN tenants t ON t.id = s.tenant_id WHERE i.is_active=TRUE AND s.is_active=TRUE AND t.is_active=TRUE'),
       query<any>('SELECT COUNT(*)::int AS count FROM tenants WHERE is_active=TRUE'),
       query<any>('SELECT COUNT(*)::int AS count FROM public_listings WHERE is_active=TRUE'),
+      query<any>("SELECT COUNT(*)::int AS count FROM public_listings WHERE is_active=TRUE AND mode='seeker'").catch(() => [{ count: 0 }]),
+      query<any>("SELECT COUNT(*)::int AS count FROM public_listings WHERE is_active=TRUE AND (mode='provider' OR mode IS NULL)").catch(() => [{ count: 0 }]),
+      query<any>('SELECT COUNT(DISTINCT guest_id)::int AS count FROM explore_sessions WHERE session_date = CURRENT_DATE').catch(() => [{ count: 0 }]),
+      query<any>('SELECT COUNT(*)::int AS count FROM explore_guests').catch(() => [{ count: 0 }]),
     ]);
-    ok(res, { stores: storeRow?.count||0, products: productRow?.count||0, tenants: tenantRow?.count||0, contributors: contributorRow?.count||0 });
+    ok(res, {
+      stores:       storeRow?.count    || 0,
+      products:     productRow?.count  || 0,
+      tenants:      tenantRow?.count   || 0,
+      contributors: contributorRow?.count || 0,
+      seeker_count: seekerRow?.count   || 0,
+      provider_count: providerRow?.count || 0,
+      daily_active_users: dauRow?.count  || 0,
+      total_users:  totalRow?.count    || 0,
+    });
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
