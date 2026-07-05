@@ -1304,6 +1304,19 @@ publicSearchRouter.post('/agent/browse', async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────────────────────
+// GET /v1/public/platform-config
+// Returns platform-wide config (job board enabled categories etc.)
+// ──────────────────────────────────────────────────────────────
+publicSearchRouter.get('/platform-config', async (_req, res) => {
+  try {
+    const rows = await query<any>('SELECT key, value FROM platform_config').catch(() => []);
+    const config: Record<string, any> = {};
+    (rows || []).forEach((r: any) => { config[r.key] = r.value; });
+    ok(res, config);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
 publicSearchRouter.post('/agent/pay', async (req, res) => {
   try {
     const { card, name } = req.body;

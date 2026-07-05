@@ -294,3 +294,33 @@ router.get("/ai-pipeline/runs/:runId", getPipelineRunById);
 router.post("/ai-pipeline/run", triggerPipelineRun);
 
 export default router;
+
+// ── Platform Config CRUD ────────────────────────────────────────────────────
+export async function getPlatformConfig(_req: Request, res: Response) {
+  try {
+    const rows = await dbQuery<any>('SELECT key, value FROM platform_config');
+    const config: Record<string, any> = {};
+    (rows || []).forEach((r: any) => { config[r.key] = r.value; });
+    res.json({ success: true, data: config });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function setPlatformConfig(req: Request, res: Response) {
+  try {
+    const { key, value } = req.body;
+    if (!key || value === undefined) {
+      return res.status(400).json({ success: false, error: 'key and value required' });
+    }
+    await dbQuery(
+      `INSERT INTO platform_config (key, value, updated_at, updated_by)
+       VALUES ($1, $2::jsonb, NOW(), $3)
+       ON CONFLICT (key) DO UPDATE SET value=$2::jsonb, updated_at=NOW(), updated_by=$3`,
+      [key, JSON.stringify(value), 'superadmin']
+    );
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}

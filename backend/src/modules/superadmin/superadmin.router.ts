@@ -14,4 +14,7 @@ router.post("/messages", controller.sendMessage);
 
 router.post("/subscriptions", controller.manageSubscription);
 
+router.get("/platform-config",       controller.getPlatformConfig);
+router.put("/platform-config",       controller.setPlatformConfig);
+
 export default router;

@@ -2345,5 +2345,19 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_notif_ref    ON notifications(ref_type, ref_id);
       `
     },
+    {
+      name: '060_platform_config',
+      sql: `
+        CREATE TABLE IF NOT EXISTS platform_config (
+          key        VARCHAR(100) PRIMARY KEY,
+          value      JSONB        NOT NULL DEFAULT '{}',
+          updated_at TIMESTAMPTZ  DEFAULT NOW(),
+          updated_by VARCHAR(200)
+        );
+        INSERT INTO platform_config (key, value)
+        VALUES ('job_board', '{"enabled_categories":["Education"],"all_categories":["Education","IT","EdTech","Finance","Healthcare","Marketing","Engineering"],"enabled":true}')
+        ON CONFLICT (key) DO NOTHING;
+      `
+    },
   ];
 }
