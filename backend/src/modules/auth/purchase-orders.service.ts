@@ -89,6 +89,64 @@ router.get('/:id', async (req, res) => {
   } catch (e: any) { fail(res, e.message); }
 });
 
+// ── POST /ai-draft — AI-generated order (auto-picks store + supplier) ──────────
+
+router.post('/ai-draft', requireMinRole('manager'), async (req, res) => {
+  try {
+    const tenantId = (req as any).user.tenantId;
+    const userId   = (req as any).user.sub;
+    const b        = req.body;
+
+    // Auto-pick first active store for this tenant
+    const [store] = await query<any>(
+      `SELECT id, name FROM stores WHERE tenant_id=$1 AND is_active=TRUE ORDER BY created_at LIMIT 1`,
+      [tenantId]
+    );
+    if (!store) return fail(res, 'No active store found — please create a store first');
+
+    // Auto-pick first active supplier; fall back to null (draft without supplier)
+    const [supplier] = await query<any>(
+      `SELECT id FROM suppliers WHERE tenant_id=$1 AND is_active=TRUE ORDER BY created_at LIMIT 1`,
+      [tenantId]
+    ).catch(() => [null]);
+    const supplierId = supplier?.id || null;
+
+    const [{ count }] = await query<any>(
+      `SELECT COUNT(*)::int AS count FROM purchase_orders WHERE tenant_id=$1`, [tenantId]
+    );
+    const num = `PO/${new Date().getFullYear()}/${String((count || 0) + 1).padStart(4, '0')}`;
+
+    const vertical = (b.vertical || '').toUpperCase();
+    const notePrefix = vertical ? `[AI · ${vertical}] ` : '[AI Order] ';
+
+    const [po] = await query<any>(
+      `INSERT INTO purchase_orders
+         (store_id, tenant_id, supplier_id, order_number, status,
+          subtotal, gst_amount, total_amount, order_date, notes, created_by)
+       VALUES ($1,$2,$3,$4,'draft',0,0,0,NOW(),$5,$6)
+       RETURNING *`,
+      [store.id, tenantId, supplierId, num, notePrefix + (b.notes || 'AI-analysed reorder'), userId]
+    );
+
+    if (Array.isArray(b.items) && b.items.length > 0) {
+      for (const item of b.items) {
+        const qty   = parseFloat(item.quantity  || item.order_qty  || 1);
+        const price = parseFloat(item.unit_price || item.unitPrice || 0);
+        await query(
+          `INSERT INTO purchase_order_items (po_id, item_name, sku, quantity, unit_price, gst_rate, notes)
+           VALUES ($1,$2,$3,$4,$5,0,$6)`,
+          [po.id, item.item_name || item.name || 'Item', item.sku || null, qty, price,
+           item.reasoning ? `AI: ${item.reasoning.slice(0, 200)}` : null]
+        );
+      }
+      await recalcTotals(po.id);
+    }
+
+    po.items = await getPOItems(po.id);
+    ok(res, po, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
 // ── POST create ──────────────────────────────────────────────
 
 router.post('/', requireMinRole('manager'), async (req, res) => {
