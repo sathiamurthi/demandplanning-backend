@@ -2359,5 +2359,13 @@ END $$;
         ON CONFLICT (key) DO NOTHING;
       `
     },
+    {
+      name: '061_enterprise_apps_config',
+      sql: `
+        INSERT INTO platform_config (key, value)
+        VALUES ('enterprise_apps', '{"enabled":true,"enabled_modules":["grocery","pharmacy","autoparts","krishna"],"all_modules":["grocery","pharmacy","autoparts","krishna","tea"]}')
+        ON CONFLICT (key) DO NOTHING;
+      `
+    },
   ];
 }
