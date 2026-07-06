@@ -2367,5 +2367,13 @@ END $$;
         ON CONFLICT (key) DO NOTHING;
       `
     },
+    {
+      name: '062_edu360_config',
+      sql: `
+        INSERT INTO platform_config (key, value)
+        VALUES ('edu360', '{"enabled":true,"enabled_categories":["School","College","University","Coaching","Online Course"],"all_categories":["School","College","University","Coaching","Online Course","Vocational"]}')
+        ON CONFLICT (key) DO NOTHING;
+      `
+    },
   ];
 }
