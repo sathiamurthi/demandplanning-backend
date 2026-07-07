@@ -2375,5 +2375,13 @@ END $$;
         ON CONFLICT (key) DO NOTHING;
       `
     },
+    {
+      name: '063_college360_config',
+      sql: `
+        INSERT INTO platform_config (key, value)
+        VALUES ('college360', '{"enabled":true,"enabled_tracks":["dev","data","design","qa","cloud","finance","marketing","product","content","security"],"all_tracks":["dev","data","design","qa","cloud","finance","marketing","product","content","security"]}')
+        ON CONFLICT (key) DO NOTHING;
+      `
+    },
   ];
 }
