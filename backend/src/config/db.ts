@@ -2383,5 +2383,84 @@ END $$;
         ON CONFLICT (key) DO NOTHING;
       `
     },
+    {
+      name: '064_college360_tables',
+      sql: `
+        CREATE TABLE IF NOT EXISTS c360_users (
+          id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          name          VARCHAR(200) NOT NULL,
+          email         VARCHAR(200) NOT NULL UNIQUE,
+          phone         VARCHAR(30),
+          password_hash TEXT         NOT NULL,
+          role          VARCHAR(20)  NOT NULL DEFAULT 'student',
+          college       VARCHAR(300),
+          branch        VARCHAR(200),
+          year          VARCHAR(50),
+          grad_year     VARCHAR(10),
+          linkedin      VARCHAR(300),
+          github        VARCHAR(300),
+          premium       BOOLEAN      DEFAULT FALSE,
+          is_active     BOOLEAN      DEFAULT TRUE,
+          created_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_users_email ON c360_users(email);
+
+        CREATE TABLE IF NOT EXISTS c360_profiles (
+          id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id       UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE UNIQUE,
+          skills        TEXT[]       DEFAULT '{}',
+          tools         TEXT[]       DEFAULT '{}',
+          soft_skills   TEXT[]       DEFAULT '{}',
+          target_role   VARCHAR(200),
+          job_type      VARCHAR(50),
+          objective     TEXT,
+          degree        VARCHAR(100),
+          cgpa          VARCHAR(20),
+          courses       TEXT,
+          achievements  TEXT,
+          projects      JSONB        DEFAULT '[]',
+          certifications JSONB       DEFAULT '[]',
+          updated_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS c360_messages (
+          id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          from_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          to_id      UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          from_name  VARCHAR(200),
+          to_name    VARCHAR(200),
+          content    TEXT         NOT NULL,
+          read       BOOLEAN      DEFAULT FALSE,
+          created_at TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_msgs_from ON c360_messages(from_id);
+        CREATE INDEX IF NOT EXISTS idx_c360_msgs_to   ON c360_messages(to_id);
+
+        CREATE TABLE IF NOT EXISTS c360_payments (
+          id         UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id    UUID          NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          user_name  VARCHAR(200),
+          user_email VARCHAR(200),
+          txn_id     VARCHAR(200)  NOT NULL,
+          amount     NUMERIC(10,2) NOT NULL,
+          type       VARCHAR(20)   NOT NULL DEFAULT 'premium',
+          status     VARCHAR(20)   NOT NULL DEFAULT 'pending',
+          note       TEXT,
+          created_at TIMESTAMPTZ   DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_payments_user ON c360_payments(user_id);
+        CREATE INDEX IF NOT EXISTS idx_c360_payments_type ON c360_payments(type, status);
+
+        CREATE TABLE IF NOT EXISTS c360_applications (
+          id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          opp_id     VARCHAR(100),
+          opp_title  VARCHAR(300),
+          company    VARCHAR(200),
+          applied_at TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_apps_user ON c360_applications(user_id);
+      `
+    },
   ];
 }
