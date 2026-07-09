@@ -2573,5 +2573,63 @@ END $$;
         );
       `
     },
+    {
+      name: '066_c360_jobs_ideas',
+      sql: `
+        -- Community job posts (student / alumni)
+        CREATE TABLE IF NOT EXISTS c360_job_posts (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          poster_id   UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          poster_name VARCHAR(200),
+          poster_role VARCHAR(30)  DEFAULT 'student',
+          title       VARCHAR(300) NOT NULL,
+          company     VARCHAR(200),
+          location    VARCHAR(200),
+          type        VARCHAR(50)  DEFAULT 'full-time',
+          description TEXT,
+          skills      TEXT[]       DEFAULT '{}',
+          apply_link  TEXT,
+          salary      VARCHAR(100),
+          status      VARCHAR(20)  DEFAULT 'active',
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_job_posts_poster ON c360_job_posts(poster_id);
+        CREATE INDEX IF NOT EXISTS idx_c360_job_posts_status ON c360_job_posts(status);
+
+        -- Idea threads
+        CREATE TABLE IF NOT EXISTS c360_ideas (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          owner_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          owner_name  VARCHAR(200),
+          title       VARCHAR(300) NOT NULL,
+          description TEXT,
+          tags        TEXT[]       DEFAULT '{}',
+          status      VARCHAR(20)  DEFAULT 'open',
+          conclusion  TEXT,
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_ideas_owner ON c360_ideas(owner_id);
+
+        CREATE TABLE IF NOT EXISTS c360_idea_contributors (
+          id        UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          idea_id   UUID         NOT NULL REFERENCES c360_ideas(id) ON DELETE CASCADE,
+          user_id   UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          user_name VARCHAR(200),
+          status    VARCHAR(20)  DEFAULT 'pending',
+          joined_at TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(idea_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS c360_idea_comments (
+          id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          idea_id    UUID         NOT NULL REFERENCES c360_ideas(id) ON DELETE CASCADE,
+          user_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          user_name  VARCHAR(200),
+          content    TEXT         NOT NULL,
+          created_at TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_idea_comments_idea ON c360_idea_comments(idea_id);
+      `
+    },
   ];
 }

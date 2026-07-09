@@ -702,3 +702,157 @@ c360Router.get('/work-projects/:id/applicants', c360Auth, async (req: C360Req, r
     ok(res, rows);
   } catch (e: any) { fail(res, e.message, 500); }
 });
+
+// ════════════════════════════════════════════════════════════════
+// COMMUNITY JOB BOARD (student / alumni post jobs)
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/job-posts', async (_req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT * FROM c360_job_posts WHERE status='active' ORDER BY created_at DESC`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/job-posts/mine', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT * FROM c360_job_posts WHERE poster_id=$1 ORDER BY created_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/job-posts', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { title, company, location, type='full-time', description, skills=[], applyLink, salary } = req.body;
+    if (!title) { fail(res, 'title required'); return; }
+    const me = await queryOne<any>('SELECT name, role FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [p] = await query<any>(
+      `INSERT INTO c360_job_posts (poster_id, poster_name, poster_role, title, company, location, type, description, skills, apply_link, salary)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [req.c360User.sub, me?.name||'', me?.role||'student', title, company||null, location||null, type, description||null, skills, applyLink||null, salary||null]
+    );
+    ok(res, p, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.delete('/job-posts/:id', c360Auth, async (req: C360Req, res) => {
+  try {
+    await query(`DELETE FROM c360_job_posts WHERE id=$1 AND poster_id=$2`, [req.params.id, req.c360User.sub]);
+    ok(res, { deleted: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════
+// IDEA THREADS
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/ideas', async (_req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT i.*,
+         (SELECT COUNT(*) FROM c360_idea_contributors c WHERE c.idea_id=i.id AND c.status='accepted') as contributor_count,
+         (SELECT COUNT(*) FROM c360_idea_comments co WHERE co.idea_id=i.id) as comment_count
+       FROM c360_ideas i ORDER BY i.created_at DESC`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/ideas/:id', async (req, res) => {
+  try {
+    const idea = await queryOne<any>(`SELECT * FROM c360_ideas WHERE id=$1`, [req.params.id]);
+    if (!idea) { fail(res, 'Not found', 404); return; }
+    const comments = await query<any>(`SELECT * FROM c360_idea_comments WHERE idea_id=$1 ORDER BY created_at ASC`, [req.params.id]);
+    const contributors = await query<any>(`SELECT * FROM c360_idea_contributors WHERE idea_id=$1 ORDER BY joined_at ASC`, [req.params.id]);
+    ok(res, { ...idea, comments, contributors });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/ideas', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { title, description, tags=[] } = req.body;
+    if (!title) { fail(res, 'title required'); return; }
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [idea] = await query<any>(
+      `INSERT INTO c360_ideas (owner_id, owner_name, title, description, tags) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.c360User.sub, me?.name||'', title, description||null, tags]
+    );
+    ok(res, idea, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.delete('/ideas/:id', c360Auth, async (req: C360Req, res) => {
+  try {
+    await query(`DELETE FROM c360_ideas WHERE id=$1 AND owner_id=$2`, [req.params.id, req.c360User.sub]);
+    ok(res, { deleted: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/ideas/:id/conclude', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { conclusion } = req.body;
+    await query(
+      `UPDATE c360_ideas SET status='concluded', conclusion=$1 WHERE id=$2 AND owner_id=$3`,
+      [conclusion||null, req.params.id, req.c360User.sub]
+    );
+    ok(res, { concluded: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/ideas/:id/join', c360Auth, async (req: C360Req, res) => {
+  try {
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [c] = await query<any>(
+      `INSERT INTO c360_idea_contributors (idea_id, user_id, user_name) VALUES ($1,$2,$3)
+       ON CONFLICT (idea_id, user_id) DO NOTHING RETURNING *`,
+      [req.params.id, req.c360User.sub, me?.name||'']
+    );
+    ok(res, c || { joined: true }, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/ideas/:id/contributors/:userId/respond', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { action } = req.body; // 'accepted' | 'rejected'
+    const idea = await queryOne<any>('SELECT owner_id FROM c360_ideas WHERE id=$1', [req.params.id]);
+    if (!idea || idea.owner_id !== req.c360User.sub) { fail(res, 'Not authorized', 403); return; }
+    await query(
+      `UPDATE c360_idea_contributors SET status=$1 WHERE idea_id=$2 AND user_id=$3`,
+      [action, req.params.id, req.params.userId]
+    );
+    ok(res, { updated: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/ideas/:id/comments', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content?.trim()) { fail(res, 'content required'); return; }
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [cm] = await query<any>(
+      `INSERT INTO c360_idea_comments (idea_id, user_id, user_name, content) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.params.id, req.c360User.sub, me?.name||'', content.trim()]
+    );
+    ok(res, cm, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ── Admin: view all ideas ─────────────────────────────────────────────────────
+c360Router.get('/admin/ideas', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
+  try {
+    const rows = await query<any>(
+      `SELECT i.*,
+         (SELECT COUNT(*) FROM c360_idea_contributors c WHERE c.idea_id=i.id AND c.status='accepted') as contributor_count,
+         (SELECT COUNT(*) FROM c360_idea_comments co WHERE co.idea_id=i.id) as comment_count
+       FROM c360_ideas i ORDER BY i.created_at DESC`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
