@@ -2462,5 +2462,116 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_c360_apps_user ON c360_applications(user_id);
       `
     },
+    {
+      name: '065_c360_social_marketplace',
+      sql: `
+        -- Book marketplace
+        CREATE TABLE IF NOT EXISTS c360_books (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          seller_id   UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          seller_name VARCHAR(200),
+          title       VARCHAR(300) NOT NULL,
+          author      VARCHAR(200),
+          subject     VARCHAR(100),
+          condition   VARCHAR(30)  DEFAULT 'good',
+          price       NUMERIC(8,2) NOT NULL DEFAULT 0,
+          type        VARCHAR(20)  DEFAULT 'sell',
+          description TEXT,
+          status      VARCHAR(20)  DEFAULT 'available',
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS c360_book_requests (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          book_id     UUID         NOT NULL REFERENCES c360_books(id) ON DELETE CASCADE,
+          buyer_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          buyer_name  VARCHAR(200),
+          message     TEXT,
+          status      VARCHAR(20)  DEFAULT 'pending',
+          created_at  TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(book_id, buyer_id)
+        );
+
+        -- Friends / connections
+        CREATE TABLE IF NOT EXISTS c360_friends (
+          id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          from_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          to_id      UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          from_name  VARCHAR(200),
+          to_name    VARCHAR(200),
+          status     VARCHAR(20)  DEFAULT 'pending',
+          created_at TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(from_id, to_id)
+        );
+
+        -- Alumni registry
+        CREATE TABLE IF NOT EXISTS c360_alumni_profiles (
+          id              UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id         UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE UNIQUE,
+          user_name       VARCHAR(200),
+          college         VARCHAR(300),
+          batch_year      VARCHAR(10),
+          current_company VARCHAR(200),
+          current_role    VARCHAR(200),
+          linkedin        VARCHAR(300),
+          bio             TEXT,
+          is_verified     BOOLEAN      DEFAULT FALSE,
+          created_at      TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS c360_alumni_invites (
+          id         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          from_id    UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          to_id      UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          from_name  VARCHAR(200),
+          to_name    VARCHAR(200),
+          message    TEXT,
+          status     VARCHAR(20)  DEFAULT 'pending',
+          created_at TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(from_id, to_id)
+        );
+
+        -- Advertisements (superadmin-managed)
+        CREATE TABLE IF NOT EXISTS c360_ads (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          title       VARCHAR(200) NOT NULL,
+          description TEXT,
+          badge       VARCHAR(100),
+          cta_text    VARCHAR(100),
+          cta_url     TEXT,
+          bg_gradient VARCHAR(100) DEFAULT 'violet',
+          placement   VARCHAR(50)  DEFAULT 'home',
+          is_active   BOOLEAN      DEFAULT TRUE,
+          clicks      INT          DEFAULT 0,
+          created_by  VARCHAR(200),
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        -- Work project listings (from mentors, recruiters, TCs)
+        CREATE TABLE IF NOT EXISTS c360_work_projects (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          poster_id   UUID         REFERENCES c360_users(id) ON DELETE SET NULL,
+          poster_name VARCHAR(200),
+          poster_type VARCHAR(30)  DEFAULT 'expert',
+          title       VARCHAR(300) NOT NULL,
+          company     VARCHAR(200),
+          description TEXT,
+          skills      TEXT[]       DEFAULT '{}',
+          duration    VARCHAR(50),
+          stipend     VARCHAR(100),
+          spots       INT          DEFAULT 1,
+          status      VARCHAR(20)  DEFAULT 'open',
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE TABLE IF NOT EXISTS c360_work_applications (
+          id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          project_id     UUID         NOT NULL REFERENCES c360_work_projects(id) ON DELETE CASCADE,
+          applicant_id   UUID         NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          applicant_name VARCHAR(200),
+          message        TEXT,
+          status         VARCHAR(20)  DEFAULT 'pending',
+          applied_at     TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(project_id, applicant_id)
+        );
+      `
+    },
   ];
 }

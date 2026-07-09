@@ -6,7 +6,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
 import { query, queryOne } from '../../config/db';
 
 export const c360Router = Router();
@@ -103,6 +102,22 @@ c360Router.post('/auth/reset-password', async (req, res) => {
   } catch (e: any) {
     fail(res, e.message, 500);
   }
+});
+
+// ── SEARCH USERS ─────────────────────────────────────────────
+c360Router.get('/auth/search', c360Auth, async (req: C360Req, res) => {
+  try {
+    const q = (req.query.q as string || '').trim();
+    if (!q) { ok(res, []); return; }
+    const rows = await query<any>(
+      `SELECT id, name, email, role, college, year FROM c360_users
+       WHERE is_active=TRUE AND id != $1
+       AND (LOWER(name) LIKE LOWER($2) OR LOWER(email) LIKE LOWER($2))
+       LIMIT 20`,
+      [req.c360User.sub, `%${q}%`]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
 });
 
 // ── ME ────────────────────────────────────────────────────────
@@ -342,4 +357,348 @@ c360Router.get('/admin/users', async (req, res) => {
   } catch (e: any) {
     fail(res, e.message, 500);
   }
+});
+
+// ════════════════════════════════════════════════════════════════
+// BOOK MARKETPLACE
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/books', async (req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT b.*, u.college as seller_college FROM c360_books b
+       LEFT JOIN c360_users u ON u.id=b.seller_id
+       WHERE b.status='available' ORDER BY b.created_at DESC`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/books/mine', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT b.*, (SELECT COUNT(*) FROM c360_book_requests r WHERE r.book_id=b.id AND r.status='pending') as pending_requests
+       FROM c360_books b WHERE b.seller_id=$1 ORDER BY b.created_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/books', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { title, author, subject, condition='good', price=0, type='sell', description } = req.body;
+    if (!title) { fail(res, 'title required'); return; }
+    const seller = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [book] = await query<any>(
+      `INSERT INTO c360_books (seller_id, seller_name, title, author, subject, condition, price, type, description)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.c360User.sub, seller?.name||'', title, author||null, subject||null, condition, price, type, description||null]
+    );
+    ok(res, book, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/books/:id/close', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { status } = req.body; // 'sold' | 'gifted'
+    await query(`UPDATE c360_books SET status=$1 WHERE id=$2 AND seller_id=$3`, [status||'sold', req.params.id, req.c360User.sub]);
+    ok(res, { updated: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.delete('/books/:id', c360Auth, async (req: C360Req, res) => {
+  try {
+    await query(`DELETE FROM c360_books WHERE id=$1 AND seller_id=$2`, [req.params.id, req.c360User.sub]);
+    ok(res, { deleted: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/books/:id/request', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { message } = req.body;
+    const buyer = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [r] = await query<any>(
+      `INSERT INTO c360_book_requests (book_id, buyer_id, buyer_name, message)
+       VALUES ($1,$2,$3,$4) ON CONFLICT (book_id, buyer_id) DO UPDATE SET message=EXCLUDED.message RETURNING *`,
+      [req.params.id, req.c360User.sub, buyer?.name||'', message||null]
+    );
+    ok(res, r, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/books/:id/requests', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT r.*, u.phone as buyer_phone FROM c360_book_requests r
+       JOIN c360_users u ON u.id=r.buyer_id
+       JOIN c360_books b ON b.id=r.book_id
+       WHERE r.book_id=$1 AND b.seller_id=$2 ORDER BY r.created_at DESC`,
+      [req.params.id, req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════
+// FRIENDS CIRCLE
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/friends', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT f.*,
+        CASE WHEN f.from_id=$1 THEN f.to_id ELSE f.from_id END as peer_id,
+        CASE WHEN f.from_id=$1 THEN f.to_name ELSE f.from_name END as peer_name
+       FROM c360_friends f
+       WHERE (f.from_id=$1 OR f.to_id=$1)
+       ORDER BY f.created_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/friends/request', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { toId, toName } = req.body;
+    if (!toId) { fail(res, 'toId required'); return; }
+    if (toId === req.c360User.sub) { fail(res, 'Cannot add yourself'); return; }
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const existing = await queryOne<any>(
+      `SELECT id, status FROM c360_friends WHERE (from_id=$1 AND to_id=$2) OR (from_id=$2 AND to_id=$1)`,
+      [req.c360User.sub, toId]
+    );
+    if (existing) { ok(res, existing); return; }
+    const [f] = await query<any>(
+      `INSERT INTO c360_friends (from_id, to_id, from_name, to_name) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [req.c360User.sub, toId, me?.name||'', toName||'']
+    );
+    ok(res, f, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/friends/:id/accept', c360Auth, async (req: C360Req, res) => {
+  try {
+    await query(`UPDATE c360_friends SET status='accepted' WHERE id=$1 AND to_id=$2`, [req.params.id, req.c360User.sub]);
+    ok(res, { accepted: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/friends/:id/reject', c360Auth, async (req: C360Req, res) => {
+  try {
+    await query(`DELETE FROM c360_friends WHERE id=$1 AND to_id=$2`, [req.params.id, req.c360User.sub]);
+    ok(res, { rejected: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════
+// ALUMNI
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/alumni', async (_req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT a.*, u.email FROM c360_alumni_profiles a
+       JOIN c360_users u ON u.id=a.user_id
+       ORDER BY a.created_at DESC LIMIT 100`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/alumni/register', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { college, batchYear, currentCompany, currentRole, linkedin, bio } = req.body;
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [a] = await query<any>(
+      `INSERT INTO c360_alumni_profiles (user_id, user_name, college, batch_year, current_company, current_role, linkedin, bio)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (user_id) DO UPDATE SET
+         college=EXCLUDED.college, batch_year=EXCLUDED.batch_year,
+         current_company=EXCLUDED.current_company, current_role=EXCLUDED.current_role,
+         linkedin=EXCLUDED.linkedin, bio=EXCLUDED.bio
+       RETURNING *`,
+      [req.c360User.sub, me?.name||'', college||null, batchYear||null, currentCompany||null, currentRole||null, linkedin||null, bio||null]
+    );
+    ok(res, a, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/alumni/my-profile', c360Auth, async (req: C360Req, res) => {
+  try {
+    const a = await queryOne<any>('SELECT * FROM c360_alumni_profiles WHERE user_id=$1', [req.c360User.sub]);
+    ok(res, a || null);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/alumni/invite', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { toId, toName, message } = req.body;
+    if (!toId) { fail(res, 'toId required'); return; }
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [inv] = await query<any>(
+      `INSERT INTO c360_alumni_invites (from_id, to_id, from_name, to_name, message)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (from_id, to_id) DO UPDATE SET message=EXCLUDED.message
+       RETURNING *`,
+      [req.c360User.sub, toId, me?.name||'', toName||'', message||null]
+    );
+    ok(res, inv, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/alumni/invites', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT * FROM c360_alumni_invites WHERE to_id=$1 AND status='pending' ORDER BY created_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/alumni/invites/:id/respond', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { action } = req.body; // 'accepted' | 'rejected' | 'hold'
+    await query(`UPDATE c360_alumni_invites SET status=$1 WHERE id=$2 AND to_id=$3`, [action, req.params.id, req.c360User.sub]);
+    ok(res, { updated: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════
+// ADVERTISEMENTS
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/ads', async (req, res) => {
+  try {
+    const placement = req.query.placement as string || 'home';
+    const rows = await query<any>(
+      `SELECT * FROM c360_ads WHERE is_active=TRUE AND placement=$1 ORDER BY created_at DESC LIMIT 3`,
+      [placement]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/ads/:id/click', async (req, res) => {
+  try {
+    await query(`UPDATE c360_ads SET clicks=clicks+1 WHERE id=$1`, [req.params.id]);
+    ok(res, { tracked: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/admin/ads', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
+  try {
+    const rows = await query<any>(`SELECT * FROM c360_ads ORDER BY created_at DESC`, []);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/admin/ads', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
+  try {
+    const { title, description, badge, ctaText, ctaUrl, bgGradient='violet', placement='home', createdBy } = req.body;
+    if (!title) { fail(res, 'title required'); return; }
+    const [ad] = await query<any>(
+      `INSERT INTO c360_ads (title, description, badge, cta_text, cta_url, bg_gradient, placement, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [title, description||null, badge||null, ctaText||null, ctaUrl||null, bgGradient, placement, createdBy||'admin']
+    );
+    ok(res, ad, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.put('/admin/ads/:id', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) { res.status(403).json({ success: false, error: 'Forbidden' }); return; }
+  try {
+    const { title, description, badge, ctaText, ctaUrl, bgGradient, placement, isActive } = req.body;
+    await query(
+      `UPDATE c360_ads SET title=COALESCE($1,title), description=COALESCE($2,description),
+       badge=COALESCE($3,badge), cta_text=COALESCE($4,cta_text), cta_url=COALESCE($5,cta_url),
+       bg_gradient=COALESCE($6,bg_gradient), placement=COALESCE($7,placement),
+       is_active=COALESCE($8,is_active) WHERE id=$9`,
+      [title||null, description||null, badge||null, ctaText||null, ctaUrl||null, bgGradient||null, placement||null, isActive??null, req.params.id]
+    );
+    ok(res, { updated: true });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════
+// WORK PROJECTS (from experts, companies, training centers)
+// ════════════════════════════════════════════════════════════════
+c360Router.get('/work-projects', async (_req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT p.*, (SELECT COUNT(*) FROM c360_work_applications a WHERE a.project_id=p.id) as applicant_count
+       FROM c360_work_projects p WHERE p.status='open' ORDER BY p.created_at DESC`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/work-projects', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { title, company, description, skills=[], duration, stipend, spots=1 } = req.body;
+    if (!title) { fail(res, 'title required'); return; }
+    const me = await queryOne<any>('SELECT name, role FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [p] = await query<any>(
+      `INSERT INTO c360_work_projects (poster_id, poster_name, poster_type, title, company, description, skills, duration, stipend, spots)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [req.c360User.sub, me?.name||'', me?.role||'mentor', title, company||null, description||null, skills, duration||null, stipend||null, spots]
+    );
+    ok(res, p, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.post('/work-projects/:id/apply', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { message } = req.body;
+    const me = await queryOne<any>('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
+    const [a] = await query<any>(
+      `INSERT INTO c360_work_applications (project_id, applicant_id, applicant_name, message)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (project_id, applicant_id) DO UPDATE SET message=EXCLUDED.message
+       RETURNING *`,
+      [req.params.id, req.c360User.sub, me?.name||'', message||null]
+    );
+    ok(res, a, 201);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/work-projects/my-applications', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT a.*, p.title as project_title, p.company, p.poster_name, p.poster_type, p.stipend
+       FROM c360_work_applications a
+       JOIN c360_work_projects p ON p.id=a.project_id
+       WHERE a.applicant_id=$1 ORDER BY a.applied_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/work-projects/posted', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT p.*, (SELECT COUNT(*) FROM c360_work_applications a WHERE a.project_id=p.id) as applicant_count
+       FROM c360_work_projects p WHERE p.poster_id=$1 ORDER BY p.created_at DESC`,
+      [req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+c360Router.get('/work-projects/:id/applicants', c360Auth, async (req: C360Req, res) => {
+  try {
+    const rows = await query<any>(
+      `SELECT a.*, u.college, u.year FROM c360_work_applications a
+       JOIN c360_users u ON u.id=a.applicant_id
+       JOIN c360_work_projects p ON p.id=a.project_id
+       WHERE a.project_id=$1 AND p.poster_id=$2 ORDER BY a.applied_at DESC`,
+      [req.params.id, req.c360User.sub]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
 });
