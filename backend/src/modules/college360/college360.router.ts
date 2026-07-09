@@ -45,6 +45,20 @@ function c360Auth(req: C360Req, res: Response, next: NextFunction) {
   }
 }
 
+// ── STATUS (diagnostic) ───────────────────────────────────────
+c360Router.get('/status', async (_req, res) => {
+  try {
+    const tables = await query<any>(
+      `SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'c360%' ORDER BY tablename`,
+      []
+    );
+    const migrations = await query<any>(`SELECT name, run_at FROM _migrations WHERE name LIKE '%college360%' OR name LIKE '%c360%' ORDER BY name`, []);
+    ok(res, { tables: tables.map((t: any) => t.tablename), migrations });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ── REGISTER ─────────────────────────────────────────────────
 c360Router.post('/auth/register', async (req, res) => {
   try {

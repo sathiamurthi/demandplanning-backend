@@ -193,9 +193,17 @@ export async function runMigrations(): Promise<void> {
       );
       if (exists.rows.length === 0) {
         logger.info(`Running migration: ${m.name}`);
-        await client.query(m.sql);
-        await client.query('INSERT INTO _migrations (name) VALUES ($1)', [m.name]);
-        logger.info(`Migration complete: ${m.name}`);
+        try {
+          await client.query('BEGIN');
+          await client.query(m.sql);
+          await client.query('INSERT INTO _migrations (name) VALUES ($1)', [m.name]);
+          await client.query('COMMIT');
+          logger.info(`Migration complete: ${m.name}`);
+        } catch (migErr: any) {
+          await client.query('ROLLBACK').catch(() => {});
+          logger.error(`Migration FAILED: ${m.name} — ${migErr.message}`);
+          throw migErr;
+        }
       }
     }
     logger.info('All migrations complete.');

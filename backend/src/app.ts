@@ -192,5 +192,5 @@ app.use((_req: Request, res: Response) => {
 // ── Global error handler ─────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   logger.error('Unhandled error', { error: err.message, stack: err.stack });
-  res.status(500).json({ success: false, error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message, timestamp: new Date().toISOString() });
+  res.status(500).json({ success: false, error: err.message || 'Internal server error', timestamp: new Date().toISOString() });
 });
