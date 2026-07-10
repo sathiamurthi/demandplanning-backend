@@ -2604,5 +2604,19 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_c360_idea_comments_idea ON c360_idea_comments(idea_id);
       `
         },
+        {
+            name: '067_c360_sp_tracking',
+            sql: `
+        ALTER TABLE c360_users ADD COLUMN IF NOT EXISTS study_plans_count INT DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS c360_sp_events (
+          id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id    UUID        NOT NULL REFERENCES c360_users(id) ON DELETE CASCADE,
+          goal       TEXT,
+          tech       TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_sp_events_user ON c360_sp_events(user_id);
+      `
+        },
     ];
 }

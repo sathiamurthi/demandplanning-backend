@@ -376,11 +376,50 @@ c360Router.get('/admin/users', async (req, res) => {
   }
   try {
     const rows = await query<any>(
-      `SELECT id, name, email, phone, role, college, branch, year, premium, created_at
+      `SELECT id, name, email, phone, role, college, branch, year, premium, study_plans_count, created_at
        FROM c360_users ORDER BY created_at DESC`,
       []
     );
     ok(res, rows);
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+// ── SUPERADMIN: study planner usage ───────────────────────────
+c360Router.get('/admin/study-planner', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {
+    res.status(403).json({ success: false, error: 'Forbidden' }); return;
+  }
+  try {
+    const rows = await query<any>(
+      `SELECT e.*, u.name as user_name, u.email as user_email, u.role as user_role
+       FROM c360_sp_events e
+       LEFT JOIN c360_users u ON u.id = e.user_id
+       ORDER BY e.created_at DESC LIMIT 200`,
+      []
+    );
+    ok(res, rows);
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+// ── TRACK study planner usage (auth required) ─────────────────
+c360Router.post('/study-planner/track', c360Auth, async (req: C360Req, res) => {
+  try {
+    const { goal, tech } = req.body;
+    const userId = req.c360User?.sub;
+    if (!userId) { fail(res, 'Unauthorized'); return; }
+    await query(
+      `INSERT INTO c360_sp_events (user_id, goal, tech) VALUES ($1,$2,$3)`,
+      [userId, goal || null, tech || null]
+    );
+    const [updated] = await query<any>(
+      `UPDATE c360_users SET study_plans_count = COALESCE(study_plans_count, 0) + 1 WHERE id=$1 RETURNING study_plans_count`,
+      [userId]
+    );
+    ok(res, { count: updated?.study_plans_count ?? 1 });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
