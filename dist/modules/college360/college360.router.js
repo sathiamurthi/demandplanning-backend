@@ -934,6 +934,160 @@ exports.c360Router.post('/ideas/:id/comments', c360Auth, async (req, res) => {
         fail(res, e.message, 500);
     }
 });
+// ════════════════════════════════════════════════════════════════
+// DIRECTORY — College / Expert / Training Center setup & search
+// ════════════════════════════════════════════════════════════════
+// ── Setup: College ────────────────────────────────────────────
+exports.c360Router.post('/setup/college', c360Auth, async (req, res) => {
+    try {
+        const { name, city, state, website, description, established_year, college_type, accreditation, programs, ranking, placement_stats } = req.body;
+        if (!name?.trim()) {
+            fail(res, 'College name is required');
+            return;
+        }
+        const [row] = await (0, db_1.query)(`INSERT INTO c360_colleges
+         (created_by, name, city, state, website, description, established_year,
+          college_type, accreditation, programs, ranking, placement_stats)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT DO NOTHING
+       RETURNING *`, [req.c360User.sub, name.trim(), city || null, state || null, website || null,
+            description || null, established_year || null, college_type || null,
+            accreditation || null, programs || [], ranking || null, placement_stats || null]);
+        await (0, db_1.query)(`UPDATE c360_users SET setup_done=true WHERE id=$1`, [req.c360User.sub]);
+        ok(res, row, 201);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.c360Router.get('/setup/college', c360Auth, async (req, res) => {
+    try {
+        const row = await (0, db_1.queryOne)('SELECT * FROM c360_colleges WHERE created_by=$1 ORDER BY created_at DESC LIMIT 1', [req.c360User.sub]);
+        ok(res, row || null);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── Setup: Expert Profile ─────────────────────────────────────
+exports.c360Router.post('/setup/expert', c360Auth, async (req, res) => {
+    try {
+        const { designation, company, industry, linkedin, bio, skills, expertise_areas, years_experience } = req.body;
+        const [row] = await (0, db_1.query)(`INSERT INTO c360_expert_profiles
+         (user_id, designation, company, industry, linkedin, bio, skills, expertise_areas, years_experience)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (user_id) DO UPDATE SET
+         designation=EXCLUDED.designation, company=EXCLUDED.company, industry=EXCLUDED.industry,
+         linkedin=EXCLUDED.linkedin, bio=EXCLUDED.bio, skills=EXCLUDED.skills,
+         expertise_areas=EXCLUDED.expertise_areas, years_experience=EXCLUDED.years_experience
+       RETURNING *`, [req.c360User.sub, designation || null, company || null, industry || null, linkedin || null,
+            bio || null, skills || [], expertise_areas || [], years_experience || null]);
+        await (0, db_1.query)(`UPDATE c360_users SET setup_done=true WHERE id=$1`, [req.c360User.sub]);
+        ok(res, row, 201);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.c360Router.get('/setup/expert', c360Auth, async (req, res) => {
+    try {
+        const row = await (0, db_1.queryOne)('SELECT * FROM c360_expert_profiles WHERE user_id=$1', [req.c360User.sub]);
+        ok(res, row || null);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── Setup: Training Center ────────────────────────────────────
+exports.c360Router.post('/setup/training-center', c360Auth, async (req, res) => {
+    try {
+        const { name, city, state, website, description, courses, certifications, fee_range, placement_support } = req.body;
+        if (!name?.trim()) {
+            fail(res, 'Training center name is required');
+            return;
+        }
+        const [row] = await (0, db_1.query)(`INSERT INTO c360_training_centers
+         (user_id, name, city, state, website, description, courses, certifications, fee_range, placement_support)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT DO NOTHING
+       RETURNING *`, [req.c360User.sub, name.trim(), city || null, state || null, website || null,
+            description || null, courses || [], certifications || [], fee_range || null,
+            placement_support || false]);
+        await (0, db_1.query)(`UPDATE c360_users SET setup_done=true WHERE id=$1`, [req.c360User.sub]);
+        ok(res, row, 201);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.c360Router.get('/setup/training-center', c360Auth, async (req, res) => {
+    try {
+        const row = await (0, db_1.queryOne)('SELECT * FROM c360_training_centers WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1', [req.c360User.sub]);
+        ok(res, row || null);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── Directory: unified search ─────────────────────────────────
+exports.c360Router.get('/directory', async (req, res) => {
+    try {
+        const q = (req.query.q || '').trim();
+        const type = (req.query.type || 'all');
+        const colleges = type === 'all' || type === 'college'
+            ? await (0, db_1.query)(`SELECT 'college' as entity_type, id, name, city, state, description, programs, accreditation, ranking, website, i360_verified, created_at FROM c360_colleges ${q ? "WHERE name ILIKE $1 OR city ILIKE $1" : ""} ORDER BY i360_verified DESC, created_at DESC LIMIT 20`, q ? [`%${q}%`] : [])
+            : [];
+        const experts = type === 'all' || type === 'expert'
+            ? await (0, db_1.query)(`SELECT 'expert' as entity_type, ep.id, u.name, ep.designation, ep.company, ep.industry, ep.bio, ep.skills, ep.expertise_areas, ep.years_experience, ep.linkedin, ep.i360_verified, ep.created_at FROM c360_expert_profiles ep JOIN c360_users u ON u.id=ep.user_id ${q ? "WHERE u.name ILIKE $1 OR ep.company ILIKE $1 OR ep.industry ILIKE $1 OR ep.designation ILIKE $1" : ""} ORDER BY ep.i360_verified DESC, ep.created_at DESC LIMIT 20`, q ? [`%${q}%`] : [])
+            : [];
+        const tcs = type === 'all' || type === 'training_center'
+            ? await (0, db_1.query)(`SELECT 'training_center' as entity_type, id, name, city, state, description, courses, certifications, fee_range, placement_support, website, i360_verified, created_at FROM c360_training_centers ${q ? "WHERE name ILIKE $1 OR city ILIKE $1" : ""} ORDER BY i360_verified DESC, created_at DESC LIMIT 20`, q ? [`%${q}%`] : [])
+            : [];
+        ok(res, { colleges, experts, training_centers: tcs });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── Admin: verify entry ────────────────────────────────────────
+exports.c360Router.patch('/admin/verify/:type/:id', async (req, res) => {
+    if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {
+        res.status(403).json({ success: false, error: 'Forbidden' });
+        return;
+    }
+    try {
+        const { type, id } = req.params;
+        const table = type === 'college' ? 'c360_colleges'
+            : type === 'expert' ? 'c360_expert_profiles'
+                : type === 'tc' ? 'c360_training_centers'
+                    : null;
+        if (!table) {
+            fail(res, 'Unknown type');
+            return;
+        }
+        await (0, db_1.query)(`UPDATE ${table} SET i360_verified=true WHERE id=$1`, [id]);
+        ok(res, { verified: true });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── Admin: list directory entries ─────────────────────────────
+exports.c360Router.get('/admin/directory', async (req, res) => {
+    if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {
+        res.status(403).json({ success: false, error: 'Forbidden' });
+        return;
+    }
+    try {
+        const colleges = await (0, db_1.query)(`SELECT 'college' as entity_type, id, name, city, state, i360_verified, created_at FROM c360_colleges ORDER BY i360_verified ASC, created_at DESC`, []);
+        const experts = await (0, db_1.query)(`SELECT 'expert' as entity_type, ep.id, u.name, ep.company, ep.designation, ep.i360_verified, ep.created_at FROM c360_expert_profiles ep JOIN c360_users u ON u.id=ep.user_id ORDER BY ep.i360_verified ASC, ep.created_at DESC`, []);
+        const tcs = await (0, db_1.query)(`SELECT 'training_center' as entity_type, id, name, city, state, i360_verified, created_at FROM c360_training_centers ORDER BY i360_verified ASC, created_at DESC`, []);
+        ok(res, { colleges, experts, training_centers: tcs });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
 // ── Admin: view all ideas ─────────────────────────────────────────────────────
 exports.c360Router.get('/admin/ideas', async (req, res) => {
     if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {

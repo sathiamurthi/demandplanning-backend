@@ -2653,5 +2653,62 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_c360_sp_events_user ON c360_sp_events(user_id);
       `
     },
+    {
+      name: '068_c360_directory',
+      sql: `
+        ALTER TABLE c360_users ADD COLUMN IF NOT EXISTS setup_done BOOLEAN DEFAULT false;
+
+        CREATE TABLE IF NOT EXISTS c360_colleges (
+          id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          created_by       UUID         REFERENCES c360_users(id) ON DELETE SET NULL,
+          name             VARCHAR(300) NOT NULL,
+          city             VARCHAR(200),
+          state            VARCHAR(200),
+          website          VARCHAR(500),
+          description      TEXT,
+          established_year INT,
+          college_type     VARCHAR(100),
+          accreditation    VARCHAR(200),
+          programs         TEXT[]       DEFAULT '{}',
+          ranking          VARCHAR(200),
+          placement_stats  TEXT,
+          i360_verified    BOOLEAN      DEFAULT false,
+          created_at       TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_colleges_name ON c360_colleges USING gin(to_tsvector('english', name));
+
+        CREATE TABLE IF NOT EXISTS c360_expert_profiles (
+          id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id          UUID         UNIQUE REFERENCES c360_users(id) ON DELETE CASCADE,
+          designation      VARCHAR(200),
+          company          VARCHAR(200),
+          industry         VARCHAR(200),
+          linkedin         VARCHAR(500),
+          bio              TEXT,
+          skills           TEXT[]       DEFAULT '{}',
+          expertise_areas  TEXT[]       DEFAULT '{}',
+          years_experience INT,
+          i360_verified    BOOLEAN      DEFAULT false,
+          created_at       TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS c360_training_centers (
+          id                UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id           UUID         REFERENCES c360_users(id) ON DELETE SET NULL,
+          name              VARCHAR(300) NOT NULL,
+          city              VARCHAR(200),
+          state             VARCHAR(200),
+          website           VARCHAR(500),
+          description       TEXT,
+          courses           TEXT[]       DEFAULT '{}',
+          certifications    TEXT[]       DEFAULT '{}',
+          fee_range         VARCHAR(100),
+          placement_support BOOLEAN      DEFAULT false,
+          i360_verified     BOOLEAN      DEFAULT false,
+          created_at        TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_c360_tc_name ON c360_training_centers USING gin(to_tsvector('english', name));
+      `
+    },
   ];
 }
