@@ -67,6 +67,10 @@ services:
         sync: false
       - key: LOG_LEVEL
         value: info
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "true"
 
 databases:
   - name: demandplanning-db
