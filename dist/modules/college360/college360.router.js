@@ -1059,7 +1059,7 @@ exports.c360Router.patch('/admin/verify/:type/:id', async (req, res) => {
         const { type, id } = req.params;
         const table = type === 'college' ? 'c360_colleges'
             : type === 'expert' ? 'c360_expert_profiles'
-                : type === 'tc' ? 'c360_training_centers'
+                : type === 'training_center' ? 'c360_training_centers'
                     : null;
         if (!table) {
             fail(res, 'Unknown type');
