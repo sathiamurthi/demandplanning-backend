@@ -6,7 +6,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
-import { query, queryOne } from '../../config/db';
+import { query, queryOne, runMigrations } from '../../config/db';
 
 export const c360Router = Router();
 
@@ -54,6 +54,19 @@ c360Router.get('/status', async (_req, res) => {
     );
     const migrations = await query<any>(`SELECT name, run_at FROM _migrations WHERE name LIKE '%college360%' OR name LIKE '%c360%' ORDER BY name`, []);
     ok(res, { tables: tables.map((t: any) => t.tablename), migrations });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+// ── RUN MIGRATIONS (admin debug) ─────────────────────────────
+c360Router.post('/admin/run-migrations', async (req, res) => {
+  if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {
+    res.status(403).json({ success: false, error: 'Forbidden' }); return;
+  }
+  try {
+    await runMigrations();
+    ok(res, { message: 'Migrations complete' });
   } catch (e: any) {
     fail(res, e.message, 500);
   }

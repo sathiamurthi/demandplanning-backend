@@ -57,6 +57,20 @@ exports.c360Router.get('/status', async (_req, res) => {
         fail(res, e.message, 500);
     }
 });
+// ── RUN MIGRATIONS (admin debug) ─────────────────────────────
+exports.c360Router.post('/admin/run-migrations', async (req, res) => {
+    if (req.headers['x-admin-key'] !== (process.env.ADMIN_SECRET || 'c360-admin')) {
+        res.status(403).json({ success: false, error: 'Forbidden' });
+        return;
+    }
+    try {
+        await (0, db_1.runMigrations)();
+        ok(res, { message: 'Migrations complete' });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
 // ── REGISTER ─────────────────────────────────────────────────
 exports.c360Router.post('/auth/register', async (req, res) => {
     try {
