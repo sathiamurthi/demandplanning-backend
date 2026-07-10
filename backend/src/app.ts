@@ -67,8 +67,15 @@ app.use(helmet({
 // ── Unified CORS configuration ───────────────────────────────
 app.use(cors({
   origin: (origin, callback) => {
-    const allowed = (process.env.FRONTEND_URL || 'http://localhost:4000,http://localhost:5173').split(',');
-    if (!origin || allowed.includes(origin) || process.env.NODE_ENV === 'development') {
+    const allowed = (process.env.FRONTEND_URL || 'http://localhost:4000,http://localhost:5173').split(',').map(s => s.trim());
+    const trusted = !origin
+      || allowed.includes(origin)
+      || process.env.NODE_ENV === 'development'
+      || /\.vercel\.app$/.test(origin)
+      || /\.ngrok(-free)?\.app$/.test(origin)
+      || /\.ngrok\.io$/.test(origin)
+      || /\.onrender\.com$/.test(origin);
+    if (trusted) {
       callback(null, true);
     } else {
       callback(new Error('CORS not allowed'));
