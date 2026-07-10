@@ -1,0 +1,12 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const commandBus_1 = require("../../../cqrs/commandBus");
+const queryBus_1 = require("../../../cqrs/queryBus");
+const createentity_1 = require("./createentity");
+const updateentity_1 = require("./updateentity");
+const deleteentity_1 = require("./deleteentity");
+const getentity_1 = require("./getentity");
+commandBus_1.commandBus.register("entity.create", new createentity_1.CreateEntityHandler());
+commandBus_1.commandBus.register("entity.update", new updateentity_1.UpdateEntityHandler());
+commandBus_1.commandBus.register("entity.delete", new deleteentity_1.DeleteEntityHandler());
+queryBus_1.queryBus.register("entity.get", new getentity_1.GetEntitiesHandler());

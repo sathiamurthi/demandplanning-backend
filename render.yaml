@@ -4,7 +4,7 @@ services:
     runtime: node
     region: ohio
     plan: free
-    buildCommand: npm install --include=dev && npm run build
+    buildCommand: npm install --omit=dev
     startCommand: node dist/index.js
     healthCheckPath: /v1/health
     envVars:

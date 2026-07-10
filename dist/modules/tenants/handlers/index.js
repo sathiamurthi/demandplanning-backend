@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const commandBus_1 = require("../../../cqrs/commandBus");
+const queryBus_1 = require("../../../cqrs/queryBus");
+const getdashboardqueryhandler_1 = require("./getdashboardqueryhandler");
+const gettenantonboardinghandler_1 = require("./gettenantonboardinghandler");
+const tenant_service_1 = require("./tenant.service");
+const users_1 = require("./users");
+queryBus_1.queryBus.register("tenant.users.get", new users_1.GetUsersQueryHandler());
+queryBus_1.queryBus.register("tenant.dashboard.get", new getdashboardqueryhandler_1.GetDashboardQueryHandler());
+queryBus_1.queryBus.register("admin.tenants.get", new tenant_service_1.GetTenantsQueryHandler());
+commandBus_1.commandBus.register("tenant.users.create", new users_1.CreateUserCommandHandler());
+commandBus_1.commandBus.register("tenant.users.update", new users_1.UpdateUserCommandHandler());
+commandBus_1.commandBus.register("tenant.users.delete", new users_1.DeleteUserCommandHandler());
+queryBus_1.queryBus.register("tenant.onboarding.get", new gettenantonboardinghandler_1.GetTenantOnboardingStatusHandler());

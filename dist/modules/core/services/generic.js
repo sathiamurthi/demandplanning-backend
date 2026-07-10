@@ -1,0 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getEntities = exports.deleteEntity = exports.updateEntity = exports.createEntity = void 0;
+const commandBus_1 = require("../../../cqrs/commandBus");
+const queryBus_1 = require("../../../cqrs//queryBus");
+const entity_1 = require("../command.ts/entity");
+const createEntity = (e, t, p) => commandBus_1.commandBus.execute(new entity_1.CreateEntityCommand(e, t, p));
+exports.createEntity = createEntity;
+const updateEntity = (e, id, p) => commandBus_1.commandBus.execute(new entity_1.UpdateEntityCommand(e, id, p));
+exports.updateEntity = updateEntity;
+const deleteEntity = (e, id, p) => commandBus_1.commandBus.execute(new entity_1.DeleteEntityCommand(e, id));
+exports.deleteEntity = deleteEntity;
+const getEntities = (e, t, s) => queryBus_1.queryBus.execute(new entity_1.GetEntitiesQuery(e, t, s));
+exports.getEntities = getEntities;
