@@ -2484,7 +2484,7 @@ END $$;
           college         VARCHAR(300),
           batch_year      VARCHAR(10),
           current_company VARCHAR(200),
-          current_role    VARCHAR(200),
+          job_role        VARCHAR(200),
           linkedin        VARCHAR(300),
           bio             TEXT,
           is_verified     BOOLEAN      DEFAULT FALSE,

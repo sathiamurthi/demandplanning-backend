@@ -540,15 +540,15 @@ exports.c360Router.get('/alumni', async (_req, res) => {
 });
 exports.c360Router.post('/alumni/register', c360Auth, async (req, res) => {
     try {
-        const { college, batchYear, currentCompany, currentRole, linkedin, bio } = req.body;
+        const { college, batchYear, currentCompany, jobRole, linkedin, bio } = req.body;
         const me = await (0, db_1.queryOne)('SELECT name FROM c360_users WHERE id=$1', [req.c360User.sub]);
-        const [a] = await (0, db_1.query)(`INSERT INTO c360_alumni_profiles (user_id, user_name, college, batch_year, current_company, current_role, linkedin, bio)
+        const [a] = await (0, db_1.query)(`INSERT INTO c360_alumni_profiles (user_id, user_name, college, batch_year, current_company, job_role, linkedin, bio)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (user_id) DO UPDATE SET
          college=EXCLUDED.college, batch_year=EXCLUDED.batch_year,
-         current_company=EXCLUDED.current_company, current_role=EXCLUDED.current_role,
+         current_company=EXCLUDED.current_company, job_role=EXCLUDED.job_role,
          linkedin=EXCLUDED.linkedin, bio=EXCLUDED.bio
-       RETURNING *`, [req.c360User.sub, me?.name || '', college || null, batchYear || null, currentCompany || null, currentRole || null, linkedin || null, bio || null]);
+       RETURNING *`, [req.c360User.sub, me?.name || '', college || null, batchYear || null, currentCompany || null, jobRole || null, linkedin || null, bio || null]);
         ok(res, a, 201);
     }
     catch (e) {
