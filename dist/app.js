@@ -87,6 +87,7 @@ const whatsapp_webhook_1 = require("./modules/whatsapp/whatsapp.webhook");
 const workflow_service_1 = require("./modules/workflow/workflow.service");
 const notify_settings_service_1 = require("./modules/workflow/notify-settings.service");
 const college360_router_1 = require("./modules/college360/college360.router");
+const data360_router_1 = require("./modules/data360/data360.router");
 // ── Create app ───────────────────────────────────────────────
 exports.app = (0, express_1.default)();
 // ── Security middleware ──────────────────────────────────────
@@ -172,6 +173,7 @@ exports.app.use('/v1/public/hotel-response', hotel_response_service_1.hotelRespo
 exports.app.use('/v1/public', workflow_service_1.workflowRouter);
 exports.app.use('/v1/public/notify-settings', notify_settings_service_1.notifySettingsRouter);
 exports.app.use('/v1/c360', college360_router_1.c360Router);
+exports.app.use('/v1/data360', data360_router_1.data360Router);
 exports.app.use('/v1/auth', auth_service_1.authRouter);
 exports.app.use('/v1/units', units_service_1.unitsRouter);
 exports.app.use('/v1/industries', industry_service_1.industryRouter);

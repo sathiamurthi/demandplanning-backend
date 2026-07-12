@@ -2675,5 +2675,63 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_c360_tc_name ON c360_training_centers USING gin(to_tsvector('english', name));
       `
         },
+        {
+            name: '069_data360',
+            sql: `
+        CREATE TABLE IF NOT EXISTS data360_users (
+          id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          name          VARCHAR(200) NOT NULL,
+          email         VARCHAR(255) UNIQUE NOT NULL,
+          password_hash TEXT         NOT NULL,
+          role          VARCHAR(50)  NOT NULL DEFAULT 'operator',
+          is_active     BOOLEAN      NOT NULL DEFAULT TRUE,
+          created_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS data360_batches (
+          id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id        UUID         REFERENCES data360_users(id) ON DELETE CASCADE,
+          name           VARCHAR(300) NOT NULL,
+          source_channel VARCHAR(50)  NOT NULL,
+          status         VARCHAR(50)  NOT NULL DEFAULT 'pending_approval',
+          total_rows     INT          NOT NULL DEFAULT 0,
+          flagged_rows   INT          NOT NULL DEFAULT 0,
+          created_at     TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at     TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_batches_user ON data360_batches(user_id);
+
+        CREATE TABLE IF NOT EXISTS data360_rows (
+          id                     UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id               UUID         REFERENCES data360_batches(id) ON DELETE CASCADE,
+          row_index              INT          NOT NULL,
+          source_type            VARCHAR(50),
+          extracted_entity       VARCHAR(300),
+          target_field_a         VARCHAR(100),
+          target_field_b         VARCHAR(300),
+          raw_snippet            TEXT,
+          agent_verdict          TEXT,
+          verdict_level          VARCHAR(20)  NOT NULL DEFAULT 'ok',
+          requires_manual_review BOOLEAN      NOT NULL DEFAULT FALSE,
+          manual_override        JSONB,
+          status                 VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          created_at             TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at             TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_rows_batch ON data360_rows(batch_id);
+
+        CREATE TABLE IF NOT EXISTS data360_distribution_jobs (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id     UUID         REFERENCES data360_batches(id) ON DELETE CASCADE,
+          target_type  VARCHAR(30)  NOT NULL,
+          config       JSONB        NOT NULL DEFAULT '{}',
+          status       VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          result       JSONB,
+          created_at   TIMESTAMPTZ  DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_jobs_batch ON data360_distribution_jobs(batch_id);
+      `
+        },
     ];
 }
