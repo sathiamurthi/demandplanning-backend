@@ -43,9 +43,10 @@ exports.data360Router = void 0;
 // Auth: own JWT scope='data360', same secret as main app
 //
 // Pipeline: ingest (client-parsed rows) -> validation agent (server-side
-// regex/business rules) -> human approval gate -> distribution
-// (file export / cloud storage via S3 / RPA portal — RPA execution is
-// NOT wired to a real browser here; see distribute handler for why).
+// regex/business rules) -> mapping agent (source fields -> target schema)
+// -> approval agent (human review gate) -> destination agent (file / cloud
+// storage / database / API / RPA portal — RPA execution is NOT wired to a
+// real browser here; see distribute handler for why).
 // ============================================================
 const express_1 = require("express");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
@@ -326,12 +327,51 @@ exports.data360Router.patch('/batches/:id/rows/:rowId', data360Auth, async (req,
         fail(res, e.message, 500);
     }
 });
-// ── DISTRIBUTION CONFIG + EXECUTE ────────────────────────────────
-// target_type: 'file_export' | 'cloud_storage' | 'rpa_portal'
+// ── MAPPING AGENT ────────────────────────────────────────────────
+// Maps ingested source fields (extracted_entity/target_field_a/target_field_b)
+// onto the field names the destination system actually expects — required
+// before any real database/API destination can consume the data correctly.
+const DEFAULT_MAPPING = {
+    extracted_entity: 'entity_name',
+    target_field_a: 'amount',
+    target_field_b: 'email',
+    source_type: 'source_type',
+};
+exports.data360Router.patch('/batches/:id/mapping', data360Auth, async (req, res) => {
+    try {
+        const { field_mapping } = req.body;
+        if (!field_mapping || typeof field_mapping !== 'object') {
+            fail(res, 'field_mapping object is required');
+            return;
+        }
+        const [batch] = await (0, db_1.query)(`UPDATE data360_batches SET field_mapping=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3 RETURNING *`, [JSON.stringify(field_mapping), req.params.id, req.d360User.sub]);
+        if (!batch) {
+            fail(res, 'Batch not found', 404);
+            return;
+        }
+        ok(res, batch);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+function applyMapping(row, mapping) {
+    const out = {};
+    for (const [sourceField, value] of Object.entries(row)) {
+        const targetField = mapping[sourceField] || DEFAULT_MAPPING[sourceField] || sourceField;
+        out[targetField] = value;
+    }
+    return out;
+}
+// Only alphanumeric + underscore, must start with a letter — prevents SQL
+// injection via a table/column name that can't be parameterized.
+const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+// ── DESTINATION AGENT — CONFIG + EXECUTE ─────────────────────────
+// target_type: 'file_export' | 'cloud_storage' | 'database' | 'api' | 'rpa_portal'
 exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, res) => {
     try {
         const { target_type, config } = req.body;
-        if (!['file_export', 'cloud_storage', 'rpa_portal'].includes(target_type)) {
+        if (!['file_export', 'cloud_storage', 'database', 'api', 'rpa_portal'].includes(target_type)) {
             fail(res, 'Invalid target_type');
             return;
         }
@@ -340,27 +380,30 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
             fail(res, 'Batch not found', 404);
             return;
         }
-        const approvedRows = await (0, db_1.query)(`SELECT row_index, source_type, extracted_entity, target_field_a, target_field_b, agent_verdict
+        const approvedRowsRaw = await (0, db_1.query)(`SELECT row_index, source_type, extracted_entity, target_field_a, target_field_b, agent_verdict
        FROM data360_rows WHERE batch_id=$1 AND status='approved' ORDER BY row_index ASC`, [batch.id]);
-        if (approvedRows.length === 0) {
+        if (approvedRowsRaw.length === 0) {
             fail(res, 'No approved rows to distribute — approve rows first');
             return;
         }
+        const mapping = batch.field_mapping || {};
+        const approvedRows = approvedRowsRaw.map(r => applyMapping(r, mapping));
         // Never persist secrets in the config we store/echo back.
         const safeConfig = { ...(config || {}) };
         if (safeConfig.password)
             safeConfig.password = '••••••••';
         if (safeConfig.secret_password_token)
             safeConfig.secret_password_token = '••••••••';
+        if (safeConfig.connection_string)
+            safeConfig.connection_string = '••••••••';
+        if (safeConfig.auth_token)
+            safeConfig.auth_token = '••••••••';
         const [job] = await (0, db_1.query)(`INSERT INTO data360_distribution_jobs (batch_id, target_type, config, status)
        VALUES ($1,$2,$3,'pending') RETURNING *`, [batch.id, target_type, JSON.stringify(safeConfig)]);
         let status = 'pending';
         let result = {};
         if (target_type === 'file_export') {
-            const ws = XLSX.utils.json_to_sheet(approvedRows.map(r => ({
-                Entity: r.extracted_entity, Amount: r.target_field_a, Email: r.target_field_b,
-                Source: r.source_type, Verdict: r.agent_verdict,
-            })));
+            const ws = XLSX.utils.json_to_sheet(approvedRows);
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, 'Approved Rows');
             const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -386,6 +429,83 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
                     }));
                     status = 'completed';
                     result = { bucket, key, row_count: approvedRows.length };
+                }
+                catch (e) {
+                    status = 'failed';
+                    result = { error: e.message };
+                }
+            }
+        }
+        else if (target_type === 'database') {
+            // Real Postgres INSERT into a destination the caller owns — a fresh,
+            // short-lived Client (not the shared pool) so a bad/slow external DB
+            // can't exhaust our own connection pool.
+            const connectionString = config?.connection_string;
+            const tableName = config?.table_name;
+            if (!connectionString || !tableName) {
+                status = 'failed';
+                result = { error: 'connection_string and table_name are both required in config.' };
+            }
+            else if (!SAFE_IDENT.test(tableName)) {
+                status = 'failed';
+                result = { error: 'table_name must be a plain identifier (letters, numbers, underscore).' };
+            }
+            else {
+                const { Client } = await Promise.resolve().then(() => __importStar(require('pg')));
+                const columns = Object.keys(approvedRows[0]);
+                if (!columns.every(c => SAFE_IDENT.test(c))) {
+                    status = 'failed';
+                    result = { error: 'Mapped field names must be plain identifiers (letters, numbers, underscore) to use as column names.' };
+                }
+                else {
+                    const client = new Client({ connectionString, connectionTimeoutMillis: 8000, statement_timeout: 15000 });
+                    try {
+                        await client.connect();
+                        const colList = columns.map(c => `"${c}"`).join(', ');
+                        let inserted = 0;
+                        for (const row of approvedRows) {
+                            const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
+                            await client.query(`INSERT INTO "${tableName}" (${colList}) VALUES (${placeholders})`, columns.map(c => row[c]));
+                            inserted++;
+                        }
+                        status = 'completed';
+                        result = { table: tableName, row_count: inserted };
+                    }
+                    catch (e) {
+                        status = 'failed';
+                        result = { error: e.message };
+                    }
+                    finally {
+                        await client.end().catch(() => { });
+                    }
+                }
+            }
+        }
+        else if (target_type === 'api') {
+            // Real HTTP POST/PUT of the mapped rows to any endpoint the caller
+            // configures — the most universally useful "get my data into any
+            // system" destination, since every modern platform accepts a webhook.
+            const url = config?.url;
+            const method = (config?.method || 'POST').toUpperCase();
+            if (!url) {
+                status = 'failed';
+                result = { error: 'url is required in config.' };
+            }
+            else {
+                try {
+                    const headers = { 'Content-Type': 'application/json' };
+                    if (config?.auth_token)
+                        headers['Authorization'] = `Bearer ${config.auth_token}`;
+                    const resp = await fetch(url, { method, headers, body: JSON.stringify({ batch: batch.name, rows: approvedRows }) });
+                    const bodyText = await resp.text();
+                    if (resp.ok) {
+                        status = 'completed';
+                        result = { status_code: resp.status, row_count: approvedRows.length, response_snippet: bodyText.slice(0, 300) };
+                    }
+                    else {
+                        status = 'failed';
+                        result = { error: `Target API responded ${resp.status}`, response_snippet: bodyText.slice(0, 300) };
+                    }
                 }
                 catch (e) {
                     status = 'failed';

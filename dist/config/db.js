@@ -2733,5 +2733,11 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_data360_jobs_batch ON data360_distribution_jobs(batch_id);
       `
         },
+        {
+            name: '070_data360_mapping',
+            sql: `
+        ALTER TABLE data360_batches ADD COLUMN IF NOT EXISTS field_mapping JSONB NOT NULL DEFAULT '{}';
+      `
+        },
     ];
 }
