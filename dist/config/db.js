@@ -2739,5 +2739,128 @@ END $$;
         ALTER TABLE data360_batches ADD COLUMN IF NOT EXISTS field_mapping JSONB NOT NULL DEFAULT '{}';
       `
         },
+        {
+            name: '071_ride360',
+            sql: `
+        CREATE TABLE IF NOT EXISTS ride360_drivers (
+          id                UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          name              VARCHAR(200) NOT NULL,
+          email             VARCHAR(255) UNIQUE,
+          phone             VARCHAR(20)  UNIQUE,
+          password_hash     TEXT,
+          auth_method       VARCHAR(20)  NOT NULL DEFAULT 'email',
+          vehicle_type      VARCHAR(20)  NOT NULL DEFAULT 'auto',
+          vehicle_number    VARCHAR(30)  NOT NULL DEFAULT '',
+          license_number    VARCHAR(50)  NOT NULL DEFAULT '',
+          license_expiry    DATE,
+          piggy_balance     NUMERIC(12,2) NOT NULL DEFAULT 0,
+          piggy_pct         INT          NOT NULL DEFAULT 10,
+          profile_complete  BOOLEAN      NOT NULL DEFAULT FALSE,
+          subscription_plan VARCHAR(20)  NOT NULL DEFAULT 'free',
+          last_login_at     TIMESTAMPTZ,
+          created_at        TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS ride360_customers (
+          id                UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          phone             VARCHAR(20)  UNIQUE NOT NULL,
+          subscription_plan VARCHAR(20)  NOT NULL DEFAULT 'free',
+          last_login_at     TIMESTAMPTZ,
+          created_at        TIMESTAMPTZ  DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS ride360_rides (
+          id                  UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          driver_id           UUID         REFERENCES ride360_drivers(id) ON DELETE CASCADE,
+          kind                VARCHAR(10)  NOT NULL,
+          provider            VARCHAR(20),
+          source              JSONB        NOT NULL,
+          destination         JSONB        NOT NULL,
+          status              VARCHAR(20)  NOT NULL DEFAULT 'active',
+          fare                NUMERIC(10,2),
+          distance_km         NUMERIC(8,2) NOT NULL DEFAULT 0,
+          duration_min        INT          NOT NULL DEFAULT 0,
+          piggy_contribution  NUMERIC(10,2) NOT NULL DEFAULT 0,
+          started_at          TIMESTAMPTZ  DEFAULT NOW(),
+          ended_at            TIMESTAMPTZ,
+          cost_analysis       JSONB,
+          odometer_start_km   NUMERIC(10,1),
+          odometer_end_km     NUMERIC(10,1),
+          matched_request_id  UUID,
+          live_lat            NUMERIC(9,6),
+          live_lng            NUMERIC(9,6),
+          live_updated_at     TIMESTAMPTZ,
+          created_at          TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_rides_driver ON ride360_rides(driver_id);
+        CREATE INDEX IF NOT EXISTS idx_ride360_rides_status ON ride360_rides(kind, status);
+
+        CREATE TABLE IF NOT EXISTS ride360_fuel_logs (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          driver_id    UUID         REFERENCES ride360_drivers(id) ON DELETE CASCADE,
+          date         DATE         NOT NULL,
+          liters       NUMERIC(6,2) NOT NULL,
+          total_cost   NUMERIC(10,2) NOT NULL,
+          odometer_km  NUMERIC(10,1) NOT NULL,
+          created_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_fuel_driver ON ride360_fuel_logs(driver_id);
+
+        CREATE TABLE IF NOT EXISTS ride360_requests (
+          id                    UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          customer_id           UUID         REFERENCES ride360_customers(id) ON DELETE CASCADE,
+          customer_phone        VARCHAR(20)  NOT NULL,
+          type                  VARCHAR(10)  NOT NULL DEFAULT 'ride',
+          pickup                JSONB        NOT NULL,
+          drop_point            JSONB        NOT NULL,
+          description           TEXT         NOT NULL DEFAULT '',
+          offered_amount        NUMERIC(10,2) NOT NULL,
+          current_amount        NUMERIC(10,2) NOT NULL,
+          status                VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          claimed_by_driver_id  UUID,
+          origin_empty_ride_id  UUID,
+          contact_initiated_by  VARCHAR(10),
+          messages              JSONB        NOT NULL DEFAULT '[]',
+          created_at            TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_requests_customer ON ride360_requests(customer_id);
+        CREATE INDEX IF NOT EXISTS idx_ride360_requests_driver ON ride360_requests(claimed_by_driver_id);
+        CREATE INDEX IF NOT EXISTS idx_ride360_requests_status ON ride360_requests(status);
+
+        CREATE TABLE IF NOT EXISTS ride360_notifications (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          for_type     VARCHAR(10)  NOT NULL,
+          for_id       UUID         NOT NULL,
+          type         VARCHAR(20)  NOT NULL,
+          text         TEXT         NOT NULL,
+          request_id   UUID,
+          read         BOOLEAN      NOT NULL DEFAULT FALSE,
+          created_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_notif_for ON ride360_notifications(for_type, for_id);
+
+        CREATE TABLE IF NOT EXISTS ride360_invites (
+          id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          referrer_type  VARCHAR(10)  NOT NULL,
+          referrer_id    UUID         NOT NULL,
+          referrer_name  VARCHAR(200),
+          invitee_type   VARCHAR(10)  NOT NULL,
+          invitee_id     UUID         NOT NULL,
+          invitee_name   VARCHAR(200),
+          channel        VARCHAR(20),
+          created_at     TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_invites_referrer ON ride360_invites(referrer_type, referrer_id);
+
+        CREATE TABLE IF NOT EXISTS ride360_ai_usage (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_type   VARCHAR(10)  NOT NULL,
+          user_id     UUID         NOT NULL,
+          feature     VARCHAR(50)  NOT NULL,
+          created_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_ride360_ai_usage_feature ON ride360_ai_usage(feature, created_at);
+      `
+        },
     ];
 }

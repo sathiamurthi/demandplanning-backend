@@ -17,6 +17,10 @@ exports.listPipelineRuns = listPipelineRuns;
 exports.getPipelineRunById = getPipelineRunById;
 exports.triggerPipelineRun = triggerPipelineRun;
 exports.getStoresForPipeline = getStoresForPipeline;
+exports.getRide360Overview = getRide360Overview;
+exports.listRide360Users = listRide360Users;
+exports.listRide360Invites = listRide360Invites;
+exports.getRide360AIUsage = getRide360AIUsage;
 exports.getPlatformConfig = getPlatformConfig;
 exports.setPlatformConfig = setPlatformConfig;
 const express_1 = require("express");
@@ -248,6 +252,93 @@ async function getStoresForPipeline(req, res) {
         res.status(500).json({ success: false, error: e.message });
     }
 }
+// ── Ride360 Analytics ─────────────────────────────────────────
+async function getRide360Overview(_req, res) {
+    try {
+        const [[driversTotal], [customersTotal], [driversNew7d], [customersNew7d], [driversActive24h], [customersActive24h], [driversActive7d], [customersActive7d], [rideStats], [emptyTotal], [emptyLeads], [emptyConverted], [invitesTotal], aiUsage, [driversPaidPlan], [customersPaidPlan],] = await Promise.all([
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_drivers`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_customers`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_drivers WHERE created_at >= NOW() - INTERVAL '7 days'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_customers WHERE created_at >= NOW() - INTERVAL '7 days'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_drivers WHERE last_login_at >= NOW() - INTERVAL '24 hours'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_customers WHERE last_login_at >= NOW() - INTERVAL '24 hours'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_drivers WHERE last_login_at >= NOW() - INTERVAL '7 days'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_customers WHERE last_login_at >= NOW() - INTERVAL '7 days'`),
+            (0, db_1.query)(`SELECT COUNT(*) FILTER (WHERE kind='paid')::int AS paid_rides,
+                COUNT(*) FILTER (WHERE kind='empty')::int AS empty_rides,
+                COALESCE(SUM(fare) FILTER (WHERE kind='paid'),0)::float AS total_fare,
+                COALESCE(SUM(piggy_contribution),0)::float AS total_piggy
+         FROM ride360_rides WHERE status='completed'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_rides WHERE kind='empty' AND status='completed'`),
+            (0, db_1.query)(`SELECT COUNT(DISTINCT origin_empty_ride_id)::int AS n FROM ride360_requests WHERE origin_empty_ride_id IS NOT NULL`),
+            (0, db_1.query)(`SELECT COUNT(DISTINCT origin_empty_ride_id)::int AS n FROM ride360_requests WHERE origin_empty_ride_id IS NOT NULL AND status='completed'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_invites`),
+            (0, db_1.query)(`SELECT feature, COUNT(*)::int AS n FROM ride360_ai_usage GROUP BY feature ORDER BY n DESC`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_drivers WHERE subscription_plan != 'free'`),
+            (0, db_1.query)(`SELECT COUNT(*)::int AS n FROM ride360_customers WHERE subscription_plan != 'free'`),
+        ]);
+        res.json({
+            success: true,
+            data: {
+                users: {
+                    driversTotal: driversTotal.n, customersTotal: customersTotal.n,
+                    driversNew7d: driversNew7d.n, customersNew7d: customersNew7d.n,
+                    driversActive24h: driversActive24h.n, customersActive24h: customersActive24h.n,
+                    driversActive7d: driversActive7d.n, customersActive7d: customersActive7d.n,
+                    driversPaidPlan: driversPaidPlan.n, customersPaidPlan: customersPaidPlan.n,
+                },
+                rides: {
+                    paidRides: rideStats.paid_rides, emptyRidesCompleted: rideStats.empty_rides,
+                    totalFare: rideStats.total_fare, totalPiggySaved: rideStats.total_piggy,
+                },
+                emptyRideConversion: {
+                    totalCompleted: emptyTotal.n, leadsGenerated: emptyLeads.n, converted: emptyConverted.n,
+                    conversionRatePct: emptyTotal.n > 0 ? Math.round((emptyConverted.n / emptyTotal.n) * 100) : 0,
+                },
+                invites: { total: invitesTotal.n },
+                aiUsage,
+            },
+        });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function listRide360Users(req, res) {
+    try {
+        const limit = Math.min(200, parseInt(req.query.limit || "100"));
+        const rows = await (0, db_1.query)(`SELECT id, name, email, phone, 'driver' AS type, vehicle_type, subscription_plan, created_at, last_login_at
+       FROM ride360_drivers
+       UNION ALL
+       SELECT id, NULL AS name, NULL AS email, phone, 'customer' AS type, NULL AS vehicle_type, subscription_plan, created_at, last_login_at
+       FROM ride360_customers
+       ORDER BY created_at DESC LIMIT $1`, [limit]);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function listRide360Invites(req, res) {
+    try {
+        const limit = Math.min(500, parseInt(req.query.limit || "200"));
+        const rows = await (0, db_1.query)(`SELECT * FROM ride360_invites ORDER BY created_at DESC LIMIT $1`, [limit]);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function getRide360AIUsage(req, res) {
+    try {
+        const rows = await (0, db_1.query)(`SELECT feature, DATE(created_at) AS day, COUNT(*)::int AS n
+       FROM ride360_ai_usage GROUP BY feature, DATE(created_at) ORDER BY day DESC LIMIT 200`);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
 // Router setup
 const router = (0, express_1.Router)();
 router.get("/tenants", getTenants);
@@ -270,6 +361,11 @@ router.get("/ai-pipeline/stores", getStoresForPipeline);
 router.get("/ai-pipeline/runs", listPipelineRuns);
 router.get("/ai-pipeline/runs/:runId", getPipelineRunById);
 router.post("/ai-pipeline/run", triggerPipelineRun);
+// Ride360 analytics
+router.get("/ride360/overview", getRide360Overview);
+router.get("/ride360/users", listRide360Users);
+router.get("/ride360/invites", listRide360Invites);
+router.get("/ride360/ai-usage", getRide360AIUsage);
 exports.default = router;
 // ── Platform Config CRUD ────────────────────────────────────────────────────
 async function getPlatformConfig(_req, res) {
