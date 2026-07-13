@@ -104,7 +104,8 @@ exports.app.use((0, cors_1.default)({
             || /\.vercel\.app$/.test(origin)
             || /\.ngrok(-free)?\.app$/.test(origin)
             || /\.ngrok\.io$/.test(origin)
-            || /\.onrender\.com$/.test(origin);
+            || /\.onrender\.com$/.test(origin)
+            || /(^|\.)demandgeniusai\.com$/.test(origin);
         if (trusted) {
             callback(null, true);
         }
