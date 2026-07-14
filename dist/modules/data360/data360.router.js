@@ -53,6 +53,7 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const XLSX = __importStar(require("xlsx"));
 const pdf_lib_1 = require("pdf-lib");
+const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const db_1 = require("../../config/db");
 exports.data360Router = (0, express_1.Router)();
 // ── Config ───────────────────────────────────────────────────
@@ -276,6 +277,71 @@ exports.data360Router.post('/batches', data360Auth, async (req, res) => {
             return { batch: { ...batch, flagged_rows: flagged }, rows: insertedRows };
         });
         ok(res, result, 201);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── AI-ENHANCED EXTRACTION (run in parallel with the client-side heuristic,
+// for the caller to compare) ──────────────────────────────────────────────
+// Takes the exact same raw OCR/PDF/voice text the client-side regex
+// heuristic (parsers.ts) already extracts from, and asks Claude to pull the
+// same field list — a real semantic read, not a growing pile of keyword
+// regexes. This is explicitly a side-by-side comparison, not a replacement:
+// the client calls this in addition to its own heuristic and lets the user
+// pick whichever value is right per field, rather than trusting either
+// blindly. Reuses the exact Anthropic call pattern already live in
+// ai.service.ts (model claude-haiku-4-5-20251001).
+exports.data360Router.post('/ai-extract', data360Auth, async (req, res) => {
+    try {
+        const { raw_snippet, fields } = req.body;
+        if (!raw_snippet?.trim()) {
+            fail(res, 'raw_snippet is required');
+            return;
+        }
+        if (!Array.isArray(fields) || fields.length === 0) {
+            fail(res, 'fields must be a non-empty array');
+            return;
+        }
+        const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+        if (!apiKey) {
+            fail(res, 'AI extraction is not configured on this server (ANTHROPIC_API_KEY / CLAUDE_API_KEY missing).', 503);
+            return;
+        }
+        const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. Extract exactly these fields: ${fields.join(', ')}.
+
+Rules:
+- Return ONLY a JSON object with these exact keys, nothing else — no explanation, no markdown fences.
+- If a field name suggests an itemized/line-item breakdown (e.g. "Item-wise Breakdown", "Line Items"), return its value as a single string listing each item as "name: value" separated by "; ".
+- If a field asks for the final amount/total, use the actual amount charged/paid — not a bill number, HSN code, GSTIN, or any other ID.
+- If a value truly cannot be found, use an empty string for that field.
+
+Raw text:
+"""
+${raw_snippet.slice(0, 4000)}
+"""`;
+        const anthropic = new sdk_1.default({ apiKey });
+        const msg = await anthropic.messages.create({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 500,
+            messages: [{ role: 'user', content: prompt }],
+        });
+        const rawText = msg.content[0].text;
+        const cleaned = rawText.replace(/```json|```/g, '').trim();
+        let extracted;
+        try {
+            extracted = JSON.parse(cleaned);
+        }
+        catch {
+            fail(res, 'AI returned invalid JSON — please try again', 502);
+            return;
+        }
+        const result = {};
+        for (const f of fields) {
+            const v = extracted[f];
+            result[f] = typeof v === 'string' ? v : (v != null ? String(v) : '');
+        }
+        ok(res, { fields: result });
     }
     catch (e) {
         fail(res, e.message, 500);
