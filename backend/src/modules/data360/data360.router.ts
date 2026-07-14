@@ -315,9 +315,12 @@ ${raw_snippet.slice(0, 4000)}
   }
 });
 
-// Image goes straight to Claude's vision — bypasses the client's Tesseract
+// Image goes straight to Gemini's vision — bypasses the client's Tesseract
 // OCR entirely, which is the fix for documents where OCR itself fails
 // (stylized invoice templates, low-contrast scans, watermarked images).
+// Uses Gemini rather than Claude here specifically because the Anthropic
+// key on this deployment is out of credits; Gemini is equally capable for
+// this read-the-image-and-return-JSON task.
 data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) => {
   try {
     const { image_base64, mime_type, fields } = req.body as { image_base64?: string; mime_type?: string; fields?: string[] };
@@ -327,25 +330,19 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
     const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
 
-    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
-    if (!apiKey) { fail(res, 'AI extraction is not configured on this server (ANTHROPIC_API_KEY / CLAUDE_API_KEY missing).', 503); return; }
+    if (!process.env.GEMINI_API_KEY) { fail(res, 'AI extraction is not configured on this server (GEMINI_API_KEY missing).', 503); return; }
 
     const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
 
-    const anthropic = new Anthropic({ apiKey });
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType as any, data: image_base64 } },
-          { type: 'text', text: prompt },
-        ],
-      }],
+    const { callGeminiVision } = await import('../auth/gemini.service');
+    const geminiRes = await callGeminiVision({
+      prompt,
+      imageBase64: image_base64,
+      mimeType: mediaType,
+      responseMimeType: 'application/json',
+      maxTokens: 500,
     });
-    const rawText = (msg.content[0] as any).text as string;
-    const result = parseExtractionResponse(rawText, fields);
+    const result = parseExtractionResponse(geminiRes.text, fields);
     if (!result) { fail(res, 'AI returned invalid JSON — please try again', 502); return; }
     ok(res, { fields: result });
   } catch (e: any) {
