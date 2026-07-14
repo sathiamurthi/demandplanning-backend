@@ -2904,5 +2904,35 @@ END $$;
         ALTER TABLE data360_rows ADD COLUMN IF NOT EXISTS fields JSONB NOT NULL DEFAULT '{}';
       `
     },
+    {
+      name: '073_data360_templates',
+      sql: `
+        CREATE TABLE IF NOT EXISTS data360_templates (
+          id                 UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id            UUID         REFERENCES data360_users(id) ON DELETE CASCADE,
+          name               VARCHAR(200) NOT NULL,
+          extraction_fields  JSONB        NOT NULL DEFAULT '[]',
+          output_type        VARCHAR(30)  NOT NULL DEFAULT 'coordinate_layout',
+          template_file_key  TEXT,
+          layout_json        JSONB,
+          created_at         TIMESTAMPTZ  DEFAULT NOW(),
+          updated_at         TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_templates_user ON data360_templates(user_id);
+
+        ALTER TABLE data360_batches ADD COLUMN IF NOT EXISTS template_id UUID REFERENCES data360_templates(id);
+
+        CREATE TABLE IF NOT EXISTS data360_generation_jobs (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id     UUID         REFERENCES data360_batches(id) ON DELETE CASCADE,
+          template_id  UUID         REFERENCES data360_templates(id),
+          status       VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          result       JSONB,
+          created_at   TIMESTAMPTZ  DEFAULT NOW(),
+          completed_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_gen_jobs_batch ON data360_generation_jobs(batch_id);
+      `
+    },
   ];
 }

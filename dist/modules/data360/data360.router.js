@@ -52,6 +52,7 @@ const express_1 = require("express");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const XLSX = __importStar(require("xlsx"));
+const pdf_lib_1 = require("pdf-lib");
 const db_1 = require("../../config/db");
 exports.data360Router = (0, express_1.Router)();
 // ── Config ───────────────────────────────────────────────────
@@ -228,7 +229,7 @@ function validateRow(row, extractionFields) {
 // validation + persistence.
 exports.data360Router.post('/batches', data360Auth, async (req, res) => {
     try {
-        const { name, source_channel, rows, extraction_fields } = req.body;
+        const { name, source_channel, rows, extraction_fields, template_id } = req.body;
         if (!name?.trim()) {
             fail(res, 'name is required');
             return;
@@ -237,10 +238,23 @@ exports.data360Router.post('/batches', data360Auth, async (req, res) => {
             fail(res, 'rows must be a non-empty array');
             return;
         }
-        const fieldNames = Array.isArray(extraction_fields) ? extraction_fields.filter(f => f && f.trim()) : [];
+        let fieldNames = Array.isArray(extraction_fields) ? extraction_fields.filter(f => f && f.trim()) : [];
+        // A saved template pre-fills the extraction field list so it doesn't need
+        // retyping on every batch of the same kind (invoice, resume, ...).
+        let templateId = null;
+        if (template_id) {
+            const tpl = await (0, db_1.queryOne)('SELECT * FROM data360_templates WHERE id=$1 AND user_id=$2', [template_id, req.d360User.sub]);
+            if (!tpl) {
+                fail(res, 'Template not found');
+                return;
+            }
+            templateId = tpl.id;
+            if (fieldNames.length === 0)
+                fieldNames = tpl.extraction_fields;
+        }
         const result = await (0, db_1.withTransaction)(async (client) => {
-            const batchRes = await client.query(`INSERT INTO data360_batches (user_id, name, source_channel, total_rows, extraction_fields)
-         VALUES ($1,$2,$3,$4,$5) RETURNING *`, [req.d360User.sub, name.trim(), source_channel || 'excel', rows.length, JSON.stringify(fieldNames)]);
+            const batchRes = await client.query(`INSERT INTO data360_batches (user_id, name, source_channel, total_rows, extraction_fields, template_id)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [req.d360User.sub, name.trim(), source_channel || 'excel', rows.length, JSON.stringify(fieldNames), templateId]);
             const batch = batchRes.rows[0];
             let flagged = 0;
             const insertedRows = [];
@@ -287,7 +301,8 @@ exports.data360Router.get('/batches/:id', data360Auth, async (req, res) => {
         }
         const rows = await (0, db_1.query)(`SELECT * FROM data360_rows WHERE batch_id=$1 ORDER BY row_index ASC`, [batch.id]);
         const jobs = await (0, db_1.query)(`SELECT * FROM data360_distribution_jobs WHERE batch_id=$1 ORDER BY created_at DESC`, [batch.id]);
-        ok(res, { batch, rows, jobs });
+        const generationJobs = await (0, db_1.query)(`SELECT * FROM data360_generation_jobs WHERE batch_id=$1 ORDER BY created_at DESC`, [batch.id]);
+        ok(res, { batch, rows, jobs, generationJobs });
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -380,6 +395,200 @@ function applyMapping(row, mapping) {
     }
     return out;
 }
+// ── TEMPLATES ──────────────────────────────────────────────────
+// A saved (extraction fields + output design) pair, reusable across batches
+// of the same kind — e.g. "Invoice", "Resume", "Quick Reference Card".
+// output_type 'coordinate_layout' draws a page from layout_json with pdf-lib
+// (no upload needed — works today). 'fillable_pdf' fills a real uploaded PDF's
+// form fields — needs template_file_key (an S3 object) and AWS credentials,
+// same honest dependency the existing cloud_storage distribute target has.
+exports.data360Router.post('/templates', data360Auth, async (req, res) => {
+    try {
+        const { name, extraction_fields, output_type, layout_json, template_file_key } = req.body;
+        if (!name?.trim()) {
+            fail(res, 'name is required');
+            return;
+        }
+        if (!Array.isArray(extraction_fields) || extraction_fields.length === 0) {
+            fail(res, 'extraction_fields must be a non-empty array');
+            return;
+        }
+        const type = output_type === 'fillable_pdf' ? 'fillable_pdf' : 'coordinate_layout';
+        const [template] = await (0, db_1.query)(`INSERT INTO data360_templates (user_id, name, extraction_fields, output_type, layout_json, template_file_key)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [req.d360User.sub, name.trim(), JSON.stringify(extraction_fields), type, layout_json ? JSON.stringify(layout_json) : null, template_file_key || null]);
+        ok(res, template, 201);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.data360Router.get('/templates', data360Auth, async (req, res) => {
+    try {
+        const templates = await (0, db_1.query)('SELECT * FROM data360_templates WHERE user_id=$1 ORDER BY created_at DESC', [req.d360User.sub]);
+        ok(res, templates);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.data360Router.patch('/templates/:id', data360Auth, async (req, res) => {
+    try {
+        const { name, extraction_fields, output_type, layout_json, template_file_key } = req.body;
+        const sets = [];
+        const params = [];
+        let i = 1;
+        if (name?.trim()) {
+            sets.push(`name=$${i++}`);
+            params.push(name.trim());
+        }
+        if (Array.isArray(extraction_fields)) {
+            sets.push(`extraction_fields=$${i++}`);
+            params.push(JSON.stringify(extraction_fields));
+        }
+        if (output_type === 'fillable_pdf' || output_type === 'coordinate_layout') {
+            sets.push(`output_type=$${i++}`);
+            params.push(output_type);
+        }
+        if (layout_json !== undefined) {
+            sets.push(`layout_json=$${i++}`);
+            params.push(layout_json ? JSON.stringify(layout_json) : null);
+        }
+        if (template_file_key !== undefined) {
+            sets.push(`template_file_key=$${i++}`);
+            params.push(template_file_key || null);
+        }
+        if (sets.length === 0) {
+            fail(res, 'Nothing to update');
+            return;
+        }
+        sets.push(`updated_at=NOW()`);
+        params.push(req.params.id, req.d360User.sub);
+        const [template] = await (0, db_1.query)(`UPDATE data360_templates SET ${sets.join(', ')} WHERE id=$${i++} AND user_id=$${i++} RETURNING *`, params);
+        if (!template) {
+            fail(res, 'Template not found', 404);
+            return;
+        }
+        ok(res, template);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.data360Router.delete('/templates/:id', data360Auth, async (req, res) => {
+    try {
+        const [deleted] = await (0, db_1.query)('DELETE FROM data360_templates WHERE id=$1 AND user_id=$2 RETURNING id', [req.params.id, req.d360User.sub]);
+        if (!deleted) {
+            fail(res, 'Template not found', 404);
+            return;
+        }
+        ok(res, { deleted: true });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// ── GENERATE AGENT ───────────────────────────────────────────────
+// Turns approved+mapped rows into a real formatted document per row, using
+// a saved template — the counterpart to the raw-row `distribute` targets
+// below. coordinate_layout renders with pdf-lib's native drawing primitives
+// (no external file needed); fillable_pdf fills an uploaded PDF's form
+// fields (needs S3 + AWS credentials — see caveat above).
+function defaultLayoutFields(fieldNames) {
+    return fieldNames.map((f, idx) => ({ field: f, label: f, x: 50, y: 730 - idx * 50, fontSize: 11 }));
+}
+async function renderCoordinatePdf(title, layout, fields) {
+    const doc = await pdf_lib_1.PDFDocument.create();
+    const page = doc.addPage([612, 792]); // US Letter
+    const font = await doc.embedFont(pdf_lib_1.StandardFonts.Helvetica);
+    const bold = await doc.embedFont(pdf_lib_1.StandardFonts.HelveticaBold);
+    page.drawText(title, { x: 50, y: 750, size: 18, font: bold, color: (0, pdf_lib_1.rgb)(0.04, 0.42, 0.36) });
+    page.drawLine({ start: { x: 50, y: 742 }, end: { x: 562, y: 742 }, thickness: 1, color: (0, pdf_lib_1.rgb)(0.85, 0.85, 0.85) });
+    for (const item of layout) {
+        const value = fields[item.field] ?? '';
+        const y = item.y ?? 700;
+        const x = item.x ?? 50;
+        page.drawText(`${(item.label || item.field).toUpperCase()}`, { x, y, size: 8, font: bold, color: (0, pdf_lib_1.rgb)(0.45, 0.45, 0.45) });
+        page.drawText(String(value || '—'), { x, y: y - 16, size: item.fontSize || 12, font, color: (0, pdf_lib_1.rgb)(0.1, 0.1, 0.1), maxWidth: 500 });
+    }
+    return doc.save();
+}
+async function fillAcroFormPdf(templateBytes, fields) {
+    const doc = await pdf_lib_1.PDFDocument.load(templateBytes);
+    const form = doc.getForm();
+    for (const [name, value] of Object.entries(fields)) {
+        try {
+            form.getTextField(name).setText(String(value ?? ''));
+        }
+        catch { /* this template has no form field with this name — skip it */ }
+    }
+    form.flatten();
+    return doc.save();
+}
+exports.data360Router.post('/batches/:id/generate', data360Auth, async (req, res) => {
+    try {
+        const { template_id } = req.body;
+        const batch = await (0, db_1.queryOne)('SELECT * FROM data360_batches WHERE id=$1 AND user_id=$2', [req.params.id, req.d360User.sub]);
+        if (!batch) {
+            fail(res, 'Batch not found', 404);
+            return;
+        }
+        const templateId = template_id || batch.template_id;
+        if (!templateId) {
+            fail(res, 'No template selected — pass template_id or save one on this batch first.');
+            return;
+        }
+        const template = await (0, db_1.queryOne)('SELECT * FROM data360_templates WHERE id=$1 AND user_id=$2', [templateId, req.d360User.sub]);
+        if (!template) {
+            fail(res, 'Template not found', 404);
+            return;
+        }
+        const approvedRows = await (0, db_1.query)(`SELECT id, row_index, fields FROM data360_rows WHERE batch_id=$1 AND status='approved' ORDER BY row_index ASC`, [batch.id]);
+        if (approvedRows.length === 0) {
+            fail(res, 'No approved rows to generate from — approve rows first');
+            return;
+        }
+        const [job] = await (0, db_1.query)(`INSERT INTO data360_generation_jobs (batch_id, template_id, status) VALUES ($1,$2,'generating') RETURNING *`, [batch.id, template.id]);
+        const fieldNames = template.extraction_fields?.length ? template.extraction_fields : batch.extraction_fields;
+        const documents = [];
+        let status = 'ready';
+        let errorMsg = '';
+        try {
+            if (template.output_type === 'fillable_pdf') {
+                if (!template.template_file_key)
+                    throw new Error('This template has no uploaded fillable PDF (template_file_key) — use a coordinate_layout template to test without one.');
+                const bucket = process.env.AWS_TEMPLATES_BUCKET || process.env.AWS_S3_BUCKET;
+                const hasCreds = !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+                if (!bucket || !hasCreds)
+                    throw new Error('AWS credentials / AWS_TEMPLATES_BUCKET are not configured on this server — fillable_pdf templates load from S3. Use a coordinate_layout template to test without S3, same limitation the cloud_storage distribute target already has.');
+                const { S3Client, GetObjectCommand } = await Promise.resolve().then(() => __importStar(require('@aws-sdk/client-s3')));
+                const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+                const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: template.template_file_key }));
+                const templateBytes = await obj.Body.transformToByteArray();
+                for (const row of approvedRows) {
+                    const bytes = await fillAcroFormPdf(templateBytes, row.fields || {});
+                    documents.push({ row_id: row.id, row_index: row.row_index, file_name: `${batch.name.replace(/[^a-z0-9]+/gi, '_')}_row${row.row_index + 1}.pdf`, file_base64: Buffer.from(bytes).toString('base64') });
+                }
+            }
+            else {
+                const layout = template.layout_json?.length ? template.layout_json : defaultLayoutFields(fieldNames);
+                for (const row of approvedRows) {
+                    const bytes = await renderCoordinatePdf(template.name, layout, row.fields || {});
+                    documents.push({ row_id: row.id, row_index: row.row_index, file_name: `${batch.name.replace(/[^a-z0-9]+/gi, '_')}_row${row.row_index + 1}.pdf`, file_base64: Buffer.from(bytes).toString('base64') });
+                }
+            }
+        }
+        catch (e) {
+            status = 'failed';
+            errorMsg = e.message;
+        }
+        const result = status === 'ready' ? { documents, row_count: documents.length } : { error: errorMsg };
+        const [updatedJob] = await (0, db_1.query)(`UPDATE data360_generation_jobs SET status=$1, result=$2, completed_at=NOW() WHERE id=$3 RETURNING *`, [status, JSON.stringify(result), job.id]);
+        ok(res, updatedJob, status === 'ready' ? 201 : 200);
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
 // Only alphanumeric + underscore, must start with a letter — prevents SQL
 // injection via a table/column name that can't be parameterized.
 const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;

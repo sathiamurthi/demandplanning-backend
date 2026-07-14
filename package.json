@@ -30,6 +30,7 @@
     "jose": "^6.2.2",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^6.9.16",
+    "pdf-lib": "^1.17.1",
     "pg": "^8.20.0",
     "puppeteer": "^24.43.1",
     "redis": "^5.11.0",
