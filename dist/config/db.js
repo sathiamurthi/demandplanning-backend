@@ -2862,5 +2862,12 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_ride360_ai_usage_feature ON ride360_ai_usage(feature, created_at);
       `
         },
+        {
+            name: '072_data360_dynamic_fields',
+            sql: `
+        ALTER TABLE data360_batches ADD COLUMN IF NOT EXISTS extraction_fields JSONB NOT NULL DEFAULT '[]';
+        ALTER TABLE data360_rows ADD COLUMN IF NOT EXISTS fields JSONB NOT NULL DEFAULT '{}';
+      `
+        },
     ];
 }

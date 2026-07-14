@@ -176,24 +176,48 @@ exports.data360Router.get('/auth/me', data360Auth, async (req, res) => {
     }
 });
 // ── VALIDATION AGENT ───────────────────────────────────────────
-// Mirrors the spec's run_validation_agent(): email regex + amount sanity
-// check, producing a percentage-confidence verdict string.
+// Generalized to work over a dynamic, user-chosen field list (e.g. "Invoice
+// Number", "Phone") instead of a fixed Entity/Amount/Email schema — a field's
+// TYPE is inferred from its name so type-aware checks (email/phone/amount
+// shape) still apply, in the spirit of the original run_validation_agent().
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-function validateRow(row) {
-    const email = (row.target_field_b || '').trim();
-    const amountRaw = row.target_field_a;
-    const amount = parseFloat(String(amountRaw ?? '').replace(/[^0-9.-]/g, ''));
-    if (!email || !EMAIL_RE.test(email)) {
+const PHONE_RE = /^[+\d][\d\s-]{6,14}\d$/;
+function classifyFieldName(name) {
+    const n = name.toLowerCase();
+    if (/e-?mail/.test(n))
+        return 'email';
+    if (/phone|mobile|contact\s*(no|number)?|cell/.test(n))
+        return 'phone';
+    if (/amount|total|price|value|cost|sum|balance/.test(n))
+        return 'amount';
+    return 'generic';
+}
+function validateRow(row, extractionFields) {
+    const fields = row.fields || {};
+    const names = extractionFields.length ? extractionFields : Object.keys(fields);
+    let missing = 0;
+    let malformed = 0;
+    for (const name of names) {
+        const val = (fields[name] || '').trim();
+        if (!val) {
+            missing++;
+            continue;
+        }
+        const type = classifyFieldName(name);
+        if (type === 'email' && !EMAIL_RE.test(val))
+            malformed++;
+        if (type === 'phone' && !PHONE_RE.test(val.replace(/[()]/g, '')))
+            malformed++;
+        if (type === 'amount' && Number.isNaN(parseFloat(val.replace(/[^0-9.-]/g, ''))))
+            malformed++;
+    }
+    if (malformed > 0) {
         const confidence = Math.floor(30 + Math.random() * 20);
-        return { verdict: `${confidence}% Error: Bad Email`, level: 'critical', requiresReview: true };
+        return { verdict: `${confidence}% Error: ${malformed} field(s) malformed`, level: 'critical', requiresReview: true };
     }
-    if (amountRaw === undefined || amountRaw === null || String(amountRaw).trim() === '' || Number.isNaN(amount) || amount <= 0) {
+    if (missing > 0) {
         const confidence = Math.floor(75 + Math.random() * 15);
-        return { verdict: `${confidence}% Review Suggested`, level: 'warning', requiresReview: true };
-    }
-    if (!row.extracted_entity || !row.extracted_entity.trim()) {
-        const confidence = Math.floor(75 + Math.random() * 15);
-        return { verdict: `${confidence}% Review Suggested`, level: 'warning', requiresReview: true };
+        return { verdict: `${confidence}% Review Suggested — ${missing} field(s) missing`, level: 'warning', requiresReview: true };
     }
     const confidence = Math.floor(94 + Math.random() * 6);
     return { verdict: `${confidence}% Match [OK]`, level: 'ok', requiresReview: false };
@@ -204,7 +228,7 @@ function validateRow(row) {
 // validation + persistence.
 exports.data360Router.post('/batches', data360Auth, async (req, res) => {
     try {
-        const { name, source_channel, rows } = req.body;
+        const { name, source_channel, rows, extraction_fields } = req.body;
         if (!name?.trim()) {
             fail(res, 'name is required');
             return;
@@ -213,24 +237,23 @@ exports.data360Router.post('/batches', data360Auth, async (req, res) => {
             fail(res, 'rows must be a non-empty array');
             return;
         }
+        const fieldNames = Array.isArray(extraction_fields) ? extraction_fields.filter(f => f && f.trim()) : [];
         const result = await (0, db_1.withTransaction)(async (client) => {
-            const batchRes = await client.query(`INSERT INTO data360_batches (user_id, name, source_channel, total_rows)
-         VALUES ($1,$2,$3,$4) RETURNING *`, [req.d360User.sub, name.trim(), source_channel || 'excel', rows.length]);
+            const batchRes = await client.query(`INSERT INTO data360_batches (user_id, name, source_channel, total_rows, extraction_fields)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`, [req.d360User.sub, name.trim(), source_channel || 'excel', rows.length, JSON.stringify(fieldNames)]);
             const batch = batchRes.rows[0];
             let flagged = 0;
             const insertedRows = [];
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
-                const v = validateRow(row);
+                const v = validateRow(row, fieldNames);
                 if (v.requiresReview)
                     flagged++;
                 const rowRes = await client.query(`INSERT INTO data360_rows
-             (batch_id, row_index, source_type, extracted_entity, target_field_a, target_field_b,
-              raw_snippet, agent_verdict, verdict_level, requires_manual_review, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             (batch_id, row_index, source_type, fields, raw_snippet, agent_verdict, verdict_level, requires_manual_review, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
            RETURNING *`, [
-                    batch.id, i, row.source_type || source_channel || 'excel', row.extracted_entity || null,
-                    row.target_field_a ?? null, row.target_field_b ?? null, row.raw_snippet || null,
+                    batch.id, i, row.source_type || source_channel || 'excel', JSON.stringify(row.fields || {}), row.raw_snippet || null,
                     v.verdict, v.level, v.requiresReview, v.requiresReview ? 'pending' : 'approved',
                 ]);
                 insertedRows.push(rowRes.rows[0]);
@@ -282,20 +305,11 @@ exports.data360Router.patch('/batches/:id/rows/:rowId', data360Auth, async (req,
         const sets = [];
         const params = [];
         let i = 1;
-        if (manual_override) {
-            const merged = {};
-            if (manual_override.target_field_a !== undefined) {
-                sets.push(`target_field_a=$${i++}`);
-                params.push(manual_override.target_field_a);
-                merged.target_field_a = manual_override.target_field_a;
-            }
-            if (manual_override.target_field_b !== undefined) {
-                sets.push(`target_field_b=$${i++}`);
-                params.push(manual_override.target_field_b);
-                merged.target_field_b = manual_override.target_field_b;
-            }
+        if (manual_override?.fields) {
+            sets.push(`fields = fields || $${i++}::jsonb`);
+            params.push(JSON.stringify(manual_override.fields));
             sets.push(`manual_override=$${i++}`);
-            params.push(JSON.stringify(merged));
+            params.push(JSON.stringify(manual_override));
             sets.push(`agent_verdict=$${i++}`);
             params.push('OK (Manually Overridden)');
             sets.push(`verdict_level='ok'`);
@@ -328,9 +342,12 @@ exports.data360Router.patch('/batches/:id/rows/:rowId', data360Auth, async (req,
     }
 });
 // ── MAPPING AGENT ────────────────────────────────────────────────
-// Maps ingested source fields (extracted_entity/target_field_a/target_field_b)
-// onto the field names the destination system actually expects — required
-// before any real database/API destination can consume the data correctly.
+// Maps ingested source fields onto the field names the destination system
+// actually expects — required before any real database/API destination can
+// consume the data correctly. Source fields are now the user's own chosen
+// extraction field names (e.g. "Invoice Number"), so there's no fixed target
+// list; DEFAULT_MAPPING below is only a fallback for pre-dynamic-fields
+// legacy batches that still carry the old fixed Entity/Amount/Email columns.
 const DEFAULT_MAPPING = {
     extracted_entity: 'entity_name',
     target_field_a: 'amount',
@@ -380,14 +397,21 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
             fail(res, 'Batch not found', 404);
             return;
         }
-        const approvedRowsRaw = await (0, db_1.query)(`SELECT row_index, source_type, extracted_entity, target_field_a, target_field_b, agent_verdict
+        const approvedRowsRaw = await (0, db_1.query)(`SELECT row_index, source_type, fields, extracted_entity, target_field_a, target_field_b, agent_verdict
        FROM data360_rows WHERE batch_id=$1 AND status='approved' ORDER BY row_index ASC`, [batch.id]);
         if (approvedRowsRaw.length === 0) {
             fail(res, 'No approved rows to distribute — approve rows first');
             return;
         }
         const mapping = batch.field_mapping || {};
-        const approvedRows = approvedRowsRaw.map(r => applyMapping(r, mapping));
+        const approvedRows = approvedRowsRaw.map(r => {
+            // New dynamic-field batches carry `fields`; legacy batches (no fields
+            // ever recorded) fall back to the old fixed Entity/Amount/Email columns.
+            const flat = r.fields && Object.keys(r.fields).length > 0
+                ? { ...r.fields, source_type: r.source_type }
+                : { extracted_entity: r.extracted_entity, target_field_a: r.target_field_a, target_field_b: r.target_field_b, source_type: r.source_type };
+            return applyMapping(flat, mapping);
+        });
         // Never persist secrets in the config we store/echo back.
         const safeConfig = { ...(config || {}) };
         if (safeConfig.password)
