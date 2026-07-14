@@ -242,14 +242,48 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
 
 // ── AI-ENHANCED EXTRACTION (run in parallel with the client-side heuristic,
 // for the caller to compare) ──────────────────────────────────────────────
-// Takes the exact same raw OCR/PDF/voice text the client-side regex
-// heuristic (parsers.ts) already extracts from, and asks Claude to pull the
-// same field list — a real semantic read, not a growing pile of keyword
-// regexes. This is explicitly a side-by-side comparison, not a replacement:
-// the client calls this in addition to its own heuristic and lets the user
-// pick whichever value is right per field, rather than trusting either
-// blindly. Reuses the exact Anthropic call pattern already live in
-// ai.service.ts (model claude-haiku-4-5-20251001).
+// Two entry points, one prompt/response contract:
+//  - /ai-extract       — text in (raw OCR/PDF/voice text), for channels
+//    where the text itself is already reliable (PDF text layer, speech-to-
+//    text). Reuses the exact Anthropic call pattern already live in
+//    ai.service.ts (model claude-haiku-4-5-20251001).
+//  - /ai-extract-image — image in, read directly by Claude's vision. Real
+//    stylized/graphic documents (colored headers, decorative fonts,
+//    watermarks) can make Tesseract's OCR come back as near-total garbage —
+//    at that point there's no usable text for ANY regex or LLM-on-text
+//    approach to work from. Reading the image directly skips that failure
+//    mode entirely for the screenshot channel.
+// Both are explicitly a side-by-side comparison, not a replacement: the
+// client calls one of these in addition to its own heuristic and lets the
+// user pick whichever value is right per field, rather than trusting
+// either blindly.
+function extractionRules(fields: string[]): string {
+  return `Extract exactly these fields: ${fields.join(', ')}.
+
+Rules:
+- Return ONLY a JSON object with these exact keys, nothing else — no explanation, no markdown fences.
+- If a field name suggests an itemized/line-item breakdown (e.g. "Item-wise Breakdown", "Line Items"), return its value as a single string listing each item as "name: value" separated by "; ".
+- If a field asks for a total/subtotal/amount, match the label exactly — a field named "Sub Total" should get the subtotal specifically, not the grand total, and a field named "Total"/"Grand Total"/"Net Payable" should get the final amount, not the subtotal.
+- Never use a bill number, HSN code, GSTIN, phone number, or any other ID as an amount.
+- If a value truly cannot be found, use an empty string for that field.`;
+}
+
+function parseExtractionResponse(rawText: string, fields: string[]): Record<string, string> | null {
+  const cleaned = rawText.replace(/```json|```/g, '').trim();
+  let extracted: Record<string, any>;
+  try {
+    extracted = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+  const result: Record<string, string> = {};
+  for (const f of fields) {
+    const v = extracted[f];
+    result[f] = typeof v === 'string' ? v : (v != null ? String(v) : '');
+  }
+  return result;
+}
+
 data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
   try {
     const { raw_snippet, fields } = req.body as { raw_snippet?: string; fields?: string[] };
@@ -259,13 +293,7 @@ data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
     const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
     if (!apiKey) { fail(res, 'AI extraction is not configured on this server (ANTHROPIC_API_KEY / CLAUDE_API_KEY missing).', 503); return; }
 
-    const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. Extract exactly these fields: ${fields.join(', ')}.
-
-Rules:
-- Return ONLY a JSON object with these exact keys, nothing else — no explanation, no markdown fences.
-- If a field name suggests an itemized/line-item breakdown (e.g. "Item-wise Breakdown", "Line Items"), return its value as a single string listing each item as "name: value" separated by "; ".
-- If a field asks for the final amount/total, use the actual amount charged/paid — not a bill number, HSN code, GSTIN, or any other ID.
-- If a value truly cannot be found, use an empty string for that field.
+    const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}
 
 Raw text:
 """
@@ -279,21 +307,46 @@ ${raw_snippet.slice(0, 4000)}
       messages: [{ role: 'user', content: prompt }],
     });
     const rawText = (msg.content[0] as any).text as string;
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    const result = parseExtractionResponse(rawText, fields);
+    if (!result) { fail(res, 'AI returned invalid JSON — please try again', 502); return; }
+    ok(res, { fields: result });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
 
-    let extracted: Record<string, any>;
-    try {
-      extracted = JSON.parse(cleaned);
-    } catch {
-      fail(res, 'AI returned invalid JSON — please try again', 502);
-      return;
-    }
+// Image goes straight to Claude's vision — bypasses the client's Tesseract
+// OCR entirely, which is the fix for documents where OCR itself fails
+// (stylized invoice templates, low-contrast scans, watermarked images).
+data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) => {
+  try {
+    const { image_base64, mime_type, fields } = req.body as { image_base64?: string; mime_type?: string; fields?: string[] };
+    if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
+    if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
 
-    const result: Record<string, string> = {};
-    for (const f of fields) {
-      const v = extracted[f];
-      result[f] = typeof v === 'string' ? v : (v != null ? String(v) : '');
-    }
+    const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+    const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
+
+    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+    if (!apiKey) { fail(res, 'AI extraction is not configured on this server (ANTHROPIC_API_KEY / CLAUDE_API_KEY missing).', 503); return; }
+
+    const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
+
+    const anthropic = new Anthropic({ apiKey });
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 500,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType as any, data: image_base64 } },
+          { type: 'text', text: prompt },
+        ],
+      }],
+    });
+    const rawText = (msg.content[0] as any).text as string;
+    const result = parseExtractionResponse(rawText, fields);
+    if (!result) { fail(res, 'AI returned invalid JSON — please try again', 502); return; }
     ok(res, { fields: result });
   } catch (e: any) {
     fail(res, e.message, 500);
