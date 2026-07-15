@@ -29,6 +29,24 @@ export type AiProviderName = 'anthropic' | 'gemini' | 'azure_openai';
 export interface AiCallParams {
   /** The text prompt / instructions sent to the model. */
   prompt: string;
+  /**
+   * Static instructions shared verbatim across many calls (extraction rules,
+   * the auto-extract format spec) — placed BEFORE `prompt`/the image so
+   * providers can cache it instead of reprocessing it on every call:
+   *  - Anthropic: marked with `cache_control: { type: 'ephemeral' }` — an
+   *    explicit cache write/read, ~10% of input price on a hit.
+   *  - Gemini 2.5 models: "implicit caching" is automatic for a repeated
+   *    leading prefix — no API call needed, just keep it first.
+   *  - Azure/OpenAI: automatic prompt caching for identical prefixes
+   *    >=1024 tokens — same requirement, keep it first.
+   * If this text changes on a later deploy, every provider just treats it as
+   * a fresh, uncached prefix — nothing to invalidate manually. Note: our
+   * current extraction-rules/auto-extract prompts may be under each
+   * provider's minimum cacheable-prefix length (Anthropic needs ~1024-2048
+   * tokens depending on model), so real savings may be small today and grow
+   * as prompts/field lists grow — this is still correct to set regardless.
+   */
+  cacheablePrompt?: string;
   /** Optional image to read alongside the prompt (vision call). */
   imageBase64?: string;
   mimeType?: string;
@@ -106,12 +124,17 @@ async function callAnthropic(params: AiCallParams): Promise<AiCallResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
   const anthropic = new Anthropic({ apiKey });
   const model = 'claude-haiku-4-5-20251001';
-  const content: any = params.imageBase64
-    ? [
-        { type: 'image', source: { type: 'base64', media_type: params.mimeType || 'image/png', data: params.imageBase64 } },
-        { type: 'text', text: params.prompt },
-      ]
-    : params.prompt;
+  // Static instructions go first as their own content block with
+  // cache_control, so repeated calls sharing this exact text hit Anthropic's
+  // prompt cache instead of being billed/processed at full price.
+  const content: any[] = [];
+  if (params.cacheablePrompt) {
+    content.push({ type: 'text', text: params.cacheablePrompt, cache_control: { type: 'ephemeral' } });
+  }
+  if (params.imageBase64) {
+    content.push({ type: 'image', source: { type: 'base64', media_type: params.mimeType || 'image/png', data: params.imageBase64 } });
+  }
+  content.push({ type: 'text', text: params.prompt });
   const msg = await anthropic.messages.create({
     model,
     max_tokens: params.maxTokens || 1500,
@@ -127,9 +150,19 @@ async function callGeminiProvider(params: AiCallParams): Promise<AiCallResult> {
   const apiKey = process.env.GEMINI_API_KEY!;
   const ai = new GoogleGenAI({ apiKey });
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  const contents: any = params.imageBase64
-    ? [{ role: 'user', parts: [{ inlineData: { mimeType: params.mimeType || 'image/png', data: params.imageBase64 } }, { text: params.prompt }] }]
-    : params.prompt;
+  // Keep the static instructions as the leading prefix (before the image or
+  // the dynamic document text) — Gemini 2.5 models apply "implicit caching"
+  // automatically to a repeated leading prefix, no explicit cache API needed.
+  let contents: any;
+  if (params.imageBase64) {
+    const parts: any[] = [];
+    if (params.cacheablePrompt) parts.push({ text: params.cacheablePrompt });
+    parts.push({ inlineData: { mimeType: params.mimeType || 'image/png', data: params.imageBase64 } });
+    parts.push({ text: params.prompt });
+    contents = [{ role: 'user', parts }];
+  } else {
+    contents = params.cacheablePrompt ? `${params.cacheablePrompt}\n\n${params.prompt}` : params.prompt;
+  }
   const response = await ai.models.generateContent({
     model,
     contents,
@@ -150,12 +183,19 @@ async function callAzureOpenAI(params: AiCallParams): Promise<AiCallResult> {
   const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-08-01-preview';
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
 
-  const userContent: any = params.imageBase64
-    ? [
-        { type: 'text', text: params.prompt },
-        { type: 'image_url', image_url: { url: `data:${params.mimeType || 'image/png'};base64,${params.imageBase64}` } },
-      ]
-    : params.prompt;
+  // Static instructions lead the content array (before the image and the
+  // dynamic prompt text) — Azure/OpenAI apply automatic prompt caching to a
+  // repeated identical prefix >=1024 tokens, no explicit cache API needed.
+  let userContent: any;
+  if (params.imageBase64) {
+    const parts: any[] = [];
+    if (params.cacheablePrompt) parts.push({ type: 'text', text: params.cacheablePrompt });
+    parts.push({ type: 'image_url', image_url: { url: `data:${params.mimeType || 'image/png'};base64,${params.imageBase64}` } });
+    parts.push({ type: 'text', text: params.prompt });
+    userContent = parts;
+  } else {
+    userContent = params.cacheablePrompt ? `${params.cacheablePrompt}\n\n${params.prompt}` : params.prompt;
+  }
 
   const body: any = {
     messages: [{ role: 'user', content: userContent }],

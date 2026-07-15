@@ -369,14 +369,14 @@ data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
       return;
     }
 
-    const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}
+    // The rules/field-list text is identical across every document in a
+    // batch (same fields requested each time) — split it out as the
+    // cacheable prefix so repeat calls within a batch benefit from
+    // provider-level prompt caching even when the document itself is new.
+    const cacheablePrompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}`;
+    const prompt = `Raw text:\n"""\n${raw_snippet.slice(0, 4000)}\n"""`;
 
-Raw text:
-"""
-${raw_snippet.slice(0, 4000)}
-"""`;
-
-    const aiRes = await callAI({ prompt, maxTokens: 1500, jsonResponse: true });
+    const aiRes = await callAI({ cacheablePrompt, prompt, maxTokens: 1500, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
@@ -413,9 +413,10 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
       return;
     }
 
-    const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
+    const cacheablePrompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
+    const prompt = `Read the attached image now and return the JSON.`;
 
-    const aiRes = await callAI({ prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
+    const aiRes = await callAI({ cacheablePrompt, prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
@@ -519,8 +520,11 @@ data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) =>
       return;
     }
 
-    const prompt = `${AUTO_EXTRACTION_PROMPT}\n\nDocument text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
-    const aiRes = await callAI({ prompt, maxTokens: 4096, jsonResponse: true });
+    // AUTO_EXTRACTION_PROMPT never varies across calls (no field list to
+    // interpolate) — the cleanest possible cacheable prefix, shared by every
+    // auto-extract call ever made, not just within one batch.
+    const prompt = `Document text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
+    const aiRes = await callAI({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt, maxTokens: 4096, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseArbitraryJson(aiRes.text);
     if (!result) {
@@ -552,7 +556,7 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
       return;
     }
 
-    const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true });
+    const aiRes = await callAI({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt: 'Read the attached image now and return the JSON.', imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseArbitraryJson(aiRes.text);
     if (!result) {
