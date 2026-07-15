@@ -893,6 +893,13 @@ exports.data360Router.patch('/batches/:id/mapping', data360Auth, async (req, res
 function applyMapping(row, mapping) {
     const out = {};
     for (const [sourceField, value] of Object.entries(row)) {
+        // A field explicitly present in the mapping with a blank destination was
+        // deliberately excluded (unchecked in the Mapping UI) — leave it out of
+        // every destination entirely, not just renamed. A field with no entry at
+        // all falls back to DEFAULT_MAPPING/identity, for legacy batches saved
+        // before this exclusion mechanism existed.
+        if (sourceField in mapping && !mapping[sourceField]?.trim())
+            continue;
         const targetField = mapping[sourceField] || DEFAULT_MAPPING[sourceField] || sourceField;
         out[targetField] = value;
     }
@@ -1051,7 +1058,14 @@ exports.data360Router.post('/batches/:id/generate', data360Auth, async (req, res
             return;
         }
         const [job] = await (0, db_1.query)(`INSERT INTO data360_generation_jobs (batch_id, template_id, status) VALUES ($1,$2,'generating') RETURNING *`, [batch.id, template.id]);
-        const fieldNames = template.extraction_fields?.length ? template.extraction_fields : batch.extraction_fields;
+        // Same mapping the Mapping stage saved (and the distribute targets
+        // already respect) — the generated document should only ever contain
+        // fields the user actually mapped, under the destination names they
+        // chose, not a dump of every raw ingested field. A field the user
+        // unchecked/cleared in Mapping (blank destination) is excluded entirely.
+        const mapping = batch.field_mapping || {};
+        const mappedRows = approvedRows.map(row => ({ ...row, mappedFields: applyMapping(row.fields || {}, mapping) }));
+        const fieldNames = mappedRows[0] ? Object.keys(mappedRows[0].mappedFields) : (template.extraction_fields?.length ? template.extraction_fields : batch.extraction_fields);
         const documents = [];
         let status = 'ready';
         let errorMsg = '';
@@ -1067,15 +1081,15 @@ exports.data360Router.post('/batches/:id/generate', data360Auth, async (req, res
                 const s3 = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
                 const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: template.template_file_key }));
                 const templateBytes = await obj.Body.transformToByteArray();
-                for (const row of approvedRows) {
-                    const bytes = await fillAcroFormPdf(templateBytes, row.fields || {});
+                for (const row of mappedRows) {
+                    const bytes = await fillAcroFormPdf(templateBytes, row.mappedFields);
                     documents.push({ row_id: row.id, row_index: row.row_index, file_name: `${batch.name.replace(/[^a-z0-9]+/gi, '_')}_row${row.row_index + 1}.pdf`, file_base64: Buffer.from(bytes).toString('base64') });
                 }
             }
             else {
                 const layout = template.layout_json?.length ? template.layout_json : defaultLayoutFields(fieldNames);
-                for (const row of approvedRows) {
-                    const bytes = await renderCoordinatePdf(template.name, layout, row.fields || {});
+                for (const row of mappedRows) {
+                    const bytes = await renderCoordinatePdf(template.name, layout, row.mappedFields);
                     documents.push({ row_id: row.id, row_index: row.row_index, file_name: `${batch.name.replace(/[^a-z0-9]+/gi, '_')}_row${row.row_index + 1}.pdf`, file_base64: Buffer.from(bytes).toString('base64') });
                 }
             }
