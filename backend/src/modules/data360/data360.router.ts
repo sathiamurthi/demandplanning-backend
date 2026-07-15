@@ -261,6 +261,15 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
 // client calls one of these in addition to its own heuristic and lets the
 // user pick whichever value is right per field, rather than trusting
 // either blindly.
+// Only real image bytes belong on either vision endpoint below — a PDF/DOCX
+// mislabeled as image/png sends the wrong bytes under the wrong mime type
+// and every vision provider rejects it (confusingly, since the error looks
+// like a vision failure rather than a format mismatch). The client is
+// responsible for turning PDF pages into real page images before calling
+// either endpoint; this list exists to fail loudly and specifically
+// instead of silently coercing an unsupported type to image/png.
+const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
 function extractionRules(fields: string[]): string {
   return `Extract exactly these fields: ${fields.join(', ')}.
 
@@ -323,9 +332,11 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     const { image_base64, mime_type, fields } = req.body as { image_base64?: string; mime_type?: string; fields?: string[] };
     if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
     if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
-
-    const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-    const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
+    if (!IMAGE_MIME_TYPES.includes(mime_type || '')) {
+      fail(res, `Unsupported file type "${mime_type || 'unknown'}" — this endpoint accepts real image bytes only (png/jpeg/webp/gif). Convert PDF pages to images before sending.`, 400);
+      return;
+    }
+    const mediaType = mime_type as string;
 
     const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
 
@@ -440,9 +451,11 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
   try {
     const { image_base64, mime_type } = req.body as { image_base64?: string; mime_type?: string };
     if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
-
-    const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
-    const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
+    if (!IMAGE_MIME_TYPES.includes(mime_type || '')) {
+      fail(res, `Unsupported file type "${mime_type || 'unknown'}" — this endpoint accepts real image bytes only (png/jpeg/webp/gif). Convert PDF pages to images before sending.`, 400);
+      return;
+    }
+    const mediaType = mime_type as string;
 
     const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 3000, jsonResponse: true });
     const result = parseArbitraryJson(aiRes.text);
