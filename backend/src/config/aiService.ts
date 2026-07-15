@@ -47,9 +47,20 @@ const DEFAULT_ORDER: AiProviderName[] = ['anthropic', 'gemini', 'azure_openai'];
 
 function providerOrder(): AiProviderName[] {
   const raw = process.env.AI_PROVIDER_ORDER;
-  if (!raw?.trim()) return DEFAULT_ORDER;
-  const names = raw.split(',').map(s => s.trim()).filter(Boolean) as AiProviderName[];
-  return names.length ? names : DEFAULT_ORDER;
+  if (raw?.trim()) {
+    const names = raw.split(',').map(s => s.trim()).filter(Boolean) as AiProviderName[];
+    if (names.length) return names;
+  }
+  // Respect the existing AI_PROVIDER preference already used elsewhere in
+  // this backend (ai.service.ts) as a hint for which provider to try
+  // first — e.g. it's currently set to "gemini" because the Anthropic
+  // account has been out of credits, without needing a second env var to
+  // express the same intent.
+  const preferred = process.env.AI_PROVIDER as AiProviderName | undefined;
+  if (preferred && DEFAULT_ORDER.includes(preferred)) {
+    return [preferred, ...DEFAULT_ORDER.filter(p => p !== preferred)];
+  }
+  return DEFAULT_ORDER;
 }
 
 function isConfigured(p: AiProviderName): boolean {

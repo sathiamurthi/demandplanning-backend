@@ -32,10 +32,21 @@ const logger_1 = require("./logger");
 const DEFAULT_ORDER = ['anthropic', 'gemini', 'azure_openai'];
 function providerOrder() {
     const raw = process.env.AI_PROVIDER_ORDER;
-    if (!raw?.trim())
-        return DEFAULT_ORDER;
-    const names = raw.split(',').map(s => s.trim()).filter(Boolean);
-    return names.length ? names : DEFAULT_ORDER;
+    if (raw?.trim()) {
+        const names = raw.split(',').map(s => s.trim()).filter(Boolean);
+        if (names.length)
+            return names;
+    }
+    // Respect the existing AI_PROVIDER preference already used elsewhere in
+    // this backend (ai.service.ts) as a hint for which provider to try
+    // first — e.g. it's currently set to "gemini" because the Anthropic
+    // account has been out of credits, without needing a second env var to
+    // express the same intent.
+    const preferred = process.env.AI_PROVIDER;
+    if (preferred && DEFAULT_ORDER.includes(preferred)) {
+        return [preferred, ...DEFAULT_ORDER.filter(p => p !== preferred)];
+    }
+    return DEFAULT_ORDER;
 }
 function isConfigured(p) {
     if (p === 'anthropic')
