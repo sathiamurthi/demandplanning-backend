@@ -341,6 +341,121 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
   }
 });
 
+// ── AUTO-EXTRACTION (no field list — pull everything the document has) ───
+// The two endpoints above need the caller to already know which fields to
+// ask for. This is the opposite: hand it any document (text or image) with
+// no field list at all, and get back whatever key/value structure the
+// document actually contains — flat fields, nested groups, and repeating
+// tables all represented natively in JSON, not squeezed into a fixed field
+// list. Still goes through the same callAI() fallback chain.
+const AUTO_EXTRACTION_PROMPT = `You are a document data extraction engine. You will be given one document,
+which may be an image (scanned or photographed), a PDF, or a Word file
+(DOCX/DOC). Read the document carefully — including any OCR needed for
+scanned or photographed content — and convert its contents into a single,
+clean JSON object of key-value pairs.
+
+FOLLOW THESE RULES EXACTLY:
+
+1. OUTPUT FORMAT
+   - Return ONLY valid JSON. No markdown fences, no commentary, no preamble
+     or explanation before or after the JSON.
+   - Use double quotes for all keys and string values.
+   - Preserve the document's own labels as JSON keys where possible,
+     converted to snake_case (e.g. "Invoice no" -> "invoice_no").
+   - Do not invent fields that do not appear in the document.
+
+2. STRUCTURE
+   - Use a flat key-value pair for each single field (e.g. name, date, ID,
+     total, address).
+   - Group related fields under a nested object when the document visually
+     groups them (e.g. "billing_info": { "name": ..., "address": ... }).
+   - Represent repeating rows (tables, line items, itemized lists) as a JSON
+     array of objects under a descriptive key (e.g. "line_items": [ {...},
+     {...} ]). Each object in the array should have the same keys.
+   - If the document has multiple distinct sections (e.g. header, table,
+     footer/summary), reflect that with top-level keys for each section.
+
+3. DATA TYPES
+   - Numbers (amounts, quantities, IDs that are purely numeric) should be
+     output as JSON numbers, not strings, unless they contain
+     formatting that must be preserved (e.g. leading zeros, phone numbers,
+     account numbers — keep those as strings).
+   - Currency values: strip currency symbols/commas and output as numbers
+     when unambiguous (e.g. "$1,200.00" -> 1200.00). If you do this, also
+     include a top-level "currency" field if a currency/symbol is present.
+   - Dates: preserve the original format found in the document as a string
+     (do not reformat or guess a different format).
+   - Booleans/checkboxes: use true/false if clearly checked/unchecked.
+
+4. MISSING OR UNCLEAR DATA
+   - If a field is present but its value is illegible or ambiguous, set
+     the value to null and do not guess.
+   - If a label exists with no value, still include the key with value null.
+   - Do not fabricate, infer, or auto-complete any data not visibly present
+     in the document.
+
+5. MULTI-PAGE / MULTI-FILE DOCUMENTS
+   - If the document has multiple pages, merge them into one JSON object,
+     using arrays for any repeating structures (e.g. line items spanning
+     pages).
+   - If a table continues across pages, concatenate its rows into a single
+     array rather than creating page_1, page_2 duplicates.
+
+6. VALIDATION
+   - Before returning the output, double-check that the JSON is syntactically
+     valid (matching brackets/braces, no trailing commas, all strings
+     quoted).
+
+Now extract all key-value data from the attached document and return the
+JSON object only.`;
+
+function parseArbitraryJson(rawText: string): any | null {
+  const cleaned = rawText.replace(/```json|```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
+data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) => {
+  try {
+    const { raw_snippet } = req.body as { raw_snippet?: string };
+    if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
+
+    const prompt = `${AUTO_EXTRACTION_PROMPT}\n\nDocument text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
+    const aiRes = await callAI({ prompt, maxTokens: 3000, jsonResponse: true });
+    const result = parseArbitraryJson(aiRes.text);
+    if (!result) {
+      fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
+      return;
+    }
+    ok(res, { data: result, provider: aiRes.provider });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, res) => {
+  try {
+    const { image_base64, mime_type } = req.body as { image_base64?: string; mime_type?: string };
+    if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
+
+    const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+    const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
+
+    const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 3000, jsonResponse: true });
+    const result = parseArbitraryJson(aiRes.text);
+    if (!result) {
+      fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
+      return;
+    }
+    ok(res, { data: result, provider: aiRes.provider });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ── LIST BATCHES ────────────────────────────────────────────────
 data360Router.get('/batches', data360Auth, async (req: D360Req, res) => {
   try {
