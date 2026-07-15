@@ -343,7 +343,10 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
       maxTokens: 500,
     });
     const result = parseExtractionResponse(geminiRes.text, fields);
-    if (!result) { fail(res, 'AI returned invalid JSON — please try again', 502); return; }
+    if (!result) {
+      fail(res, `AI returned invalid JSON — please try again. Raw response: ${geminiRes.text.slice(0, 300)}`, 502);
+      return;
+    }
     ok(res, { fields: result });
   } catch (e: any) {
     fail(res, e.message, 500);
