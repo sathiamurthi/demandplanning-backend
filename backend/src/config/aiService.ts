@@ -53,6 +53,13 @@ export interface AiCallParams {
   maxTokens?: number;
   /** Ask the provider to constrain output to a JSON object where supported. */
   jsonResponse?: boolean;
+  /**
+   * Overrides the provider order for this call only (still filtered down to
+   * configured providers) — e.g. `costEffectiveOrder()` for a caller that
+   * wants the cheapest provider tried first regardless of the global
+   * AI_PROVIDER_ORDER/AI_PROVIDER hint used elsewhere.
+   */
+  preferredOrder?: AiProviderName[];
 }
 
 export interface AiCallResult {
@@ -91,6 +98,35 @@ function estimateCost(model: string, inputTokens: number, outputTokens: number):
   const rate = PRICING[model];
   if (!rate) return 0;
   return (inputTokens / 1_000_000) * rate.inputPer1M + (outputTokens / 1_000_000) * rate.outputPer1M;
+}
+
+// The model each provider will actually be called with (mirrors the model
+// selection in each callX function below) — used only to rank providers by
+// price, not to make the call itself.
+function modelFor(provider: AiProviderName): string {
+  if (provider === 'anthropic') return 'claude-haiku-4-5-20251001';
+  if (provider === 'gemini') return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  return process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
+}
+
+// A representative extraction call's shape (a few pages of document text in,
+// a JSON object out) — just for ranking providers by price, not billing.
+const REFERENCE_INPUT_TOKENS = 2000;
+const REFERENCE_OUTPUT_TOKENS = 500;
+
+/**
+ * Ranks all three providers cheapest-first using the live PRICING table
+ * (respects PRICE_*_PER_1M env overrides), for callers that want to always
+ * use the cheapest available model rather than a fixed/quality-ordered
+ * preference — e.g. Data360's extraction endpoints, where every provider
+ * produces materially the same structured-JSON result, so cost should
+ * decide the order. Filtered down to configured providers by `callAI`.
+ */
+export function costEffectiveOrder(): AiProviderName[] {
+  return [...DEFAULT_ORDER].sort(
+    (a, b) => estimateCost(modelFor(a), REFERENCE_INPUT_TOKENS, REFERENCE_OUTPUT_TOKENS)
+      - estimateCost(modelFor(b), REFERENCE_INPUT_TOKENS, REFERENCE_OUTPUT_TOKENS)
+  );
 }
 
 const DEFAULT_ORDER: AiProviderName[] = ['anthropic', 'gemini', 'azure_openai'];
@@ -231,7 +267,7 @@ const CALLERS: Record<AiProviderName, (p: AiCallParams) => Promise<AiCallResult>
  * configured provider has been tried and failed.
  */
 export async function callAI(params: AiCallParams): Promise<AiCallResult> {
-  const order = providerOrder().filter(isConfigured);
+  const order = (params.preferredOrder ?? providerOrder()).filter(isConfigured);
   if (order.length === 0) {
     throw new Error(
       'No AI provider is configured (need ANTHROPIC_API_KEY/CLAUDE_API_KEY, GEMINI_API_KEY, or AZURE_OPENAI_ENDPOINT+AZURE_OPENAI_KEY).'

@@ -409,7 +409,7 @@ exports.data360Router.post('/ai-extract', data360Auth, async (req, res) => {
         // provider-level prompt caching even when the document itself is new.
         const cacheablePrompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}`;
         const prompt = `Raw text:\n"""\n${raw_snippet.slice(0, 4000)}\n"""`;
-        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt, prompt, maxTokens: 1500, jsonResponse: true });
+        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt, prompt, maxTokens: 1500, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)() });
         await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
         const result = parseExtractionResponse(aiRes.text, fields);
         if (!result) {
@@ -452,7 +452,7 @@ exports.data360Router.post('/ai-extract-image', data360Auth, async (req, res) =>
         }
         const cacheablePrompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
         const prompt = `Read the attached image now and return the JSON.`;
-        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt, prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
+        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt, prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)() });
         await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
         const result = parseExtractionResponse(aiRes.text, fields);
         if (!result) {
@@ -560,7 +560,7 @@ exports.data360Router.post('/ai-extract-auto', data360Auth, async (req, res) => 
         // interpolate) — the cleanest possible cacheable prefix, shared by every
         // auto-extract call ever made, not just within one batch.
         const prompt = `Document text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
-        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt, maxTokens: 4096, jsonResponse: true });
+        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt, maxTokens: 4096, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)() });
         await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
         const result = parseArbitraryJson(aiRes.text);
         if (!result) {
@@ -593,7 +593,7 @@ exports.data360Router.post('/ai-extract-image-auto', data360Auth, async (req, re
             ok(res, { data: cached.result, provider: cached.provider, cached: true });
             return;
         }
-        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt: 'Read the attached image now and return the JSON.', imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true });
+        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt: AUTO_EXTRACTION_PROMPT, prompt: 'Read the attached image now and return the JSON.', imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)() });
         await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
         const result = parseArbitraryJson(aiRes.text);
         if (!result) {
@@ -963,6 +963,23 @@ exports.data360Router.post('/batches/:id/generate', data360Auth, async (req, res
 // Only alphanumeric + underscore, must start with a letter — prevents SQL
 // injection via a table/column name that can't be parameterized.
 const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+// Turns a free-typed field name ("Invoice Number") into a valid XML element
+// name (invoice_number) — element names can't contain spaces/punctuation or
+// start with a digit.
+function xmlTagName(key) {
+    const cleaned = key.trim().replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'field';
+    return /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+function xmlEscape(v) {
+    return String(v ?? '').replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+}
+// Same "mapped output, any 3rd-party system" job the JSON API target does —
+// some downstream systems (older enterprise integrations, SOAP-era APIs)
+// only accept XML, so the API/Webhook target can produce either.
+function rowsToXml(batchName, rows) {
+    const rowsXml = rows.map(row => `<row>${Object.entries(row).map(([k, v]) => { const tag = xmlTagName(k); return `<${tag}>${xmlEscape(v)}</${tag}>`; }).join('')}</row>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<batch name="${xmlEscape(batchName)}">${rowsXml}</batch>`;
+}
 // ── DESTINATION AGENT — CONFIG + EXECUTE ─────────────────────────
 // target_type: 'file_export' | 'cloud_storage' | 'database' | 'api' | 'rpa_portal'
 exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, res) => {
@@ -1091,16 +1108,18 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
             // system" destination, since every modern platform accepts a webhook.
             const url = config?.url;
             const method = (config?.method || 'POST').toUpperCase();
+            const format = (config?.format || 'json').toLowerCase();
             if (!url) {
                 status = 'failed';
                 result = { error: 'url is required in config.' };
             }
             else {
                 try {
-                    const headers = { 'Content-Type': 'application/json' };
+                    const headers = { 'Content-Type': format === 'xml' ? 'application/xml' : 'application/json' };
                     if (config?.auth_token)
                         headers['Authorization'] = `Bearer ${config.auth_token}`;
-                    const resp = await fetch(url, { method, headers, body: JSON.stringify({ batch: batch.name, rows: approvedRows }) });
+                    const body = format === 'xml' ? rowsToXml(batch.name, approvedRows) : JSON.stringify({ batch: batch.name, rows: approvedRows });
+                    const resp = await fetch(url, { method, headers, body });
                     const bodyText = await resp.text();
                     if (resp.ok) {
                         status = 'completed';
