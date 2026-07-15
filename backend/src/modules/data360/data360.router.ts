@@ -13,6 +13,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import * as XLSX from 'xlsx';
+import { createHash } from 'crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { query, queryOne, withTransaction, runMigrations } from '../../config/db';
 import { callAI } from '../../config/aiService';
@@ -303,17 +304,54 @@ function parseExtractionResponse(rawText: string, fields: string[]): Record<stri
 // still generated real, billable output) gets logged here so cost/token use
 // is visible per file and per batch in Settings, not just inferred from a
 // provider's own dashboard after the fact.
-async function logAiUsage(userId: string, batchLabel: string | undefined, fileLabel: string | undefined, aiRes: { provider: string; model: string; inputTokens: number; outputTokens: number }, pages = 1) {
+async function logAiUsage(userId: string, batchLabel: string | undefined, fileLabel: string | undefined, aiRes: { provider: string; model: string; inputTokens: number; outputTokens: number }, pages = 1, fromCache = false) {
   try {
     await query(
-      `INSERT INTO data360_ai_usage (user_id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      `INSERT INTO data360_ai_usage (user_id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd, from_cache)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [userId, batchLabel || null, fileLabel || null, aiRes.provider, aiRes.model, aiRes.inputTokens, aiRes.outputTokens, pages,
-        (aiRes as any).estimatedCostUsd || 0]
+        (aiRes as any).estimatedCostUsd || 0, fromCache]
     );
   } catch (e: any) {
     // Usage logging must never break the actual extraction response.
     logger.warn(`Failed to log AI usage: ${e.message}`);
+  }
+}
+
+// ── AI RESULT CACHE ────────────────────────────────────────────────────────
+// Exact-match caching per (user, endpoint, document content, mode). The
+// discriminator is part of the key deliberately — the same image sent to
+// /ai-extract-image with a different field list, or under a different saved
+// template, is a genuinely different request and must not reuse a stale
+// result; only a byte-identical document processed the same way hits the
+// cache. This is what actually matters for repeat testing/re-uploads and
+// for a batch/zip containing the same file more than once — not a fuzzy
+// "looks similar" match, which would risk handing back another document's
+// field values.
+function computeCacheKey(endpoint: string, content: string, discriminator: string): string {
+  return createHash('sha256').update(`${endpoint}|${discriminator}|${content}`).digest('hex');
+}
+
+async function getCachedResult(userId: string, cacheKey: string): Promise<{ result: any; provider: string; model: string } | null> {
+  const row = await queryOne<any>(
+    `SELECT result_json, provider, model FROM data360_ai_cache WHERE user_id=$1 AND cache_key=$2`,
+    [userId, cacheKey]
+  );
+  if (!row) return null;
+  await query(`UPDATE data360_ai_cache SET hit_count = hit_count + 1, last_hit_at = NOW() WHERE user_id=$1 AND cache_key=$2`, [userId, cacheKey]);
+  return { result: row.result_json, provider: row.provider, model: row.model };
+}
+
+async function setCachedResult(userId: string, cacheKey: string, endpoint: string, result: any, provider: string, model: string) {
+  try {
+    await query(
+      `INSERT INTO data360_ai_cache (user_id, cache_key, endpoint, result_json, provider, model)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (user_id, cache_key) DO UPDATE SET result_json=$4, provider=$5, model=$6`,
+      [userId, cacheKey, endpoint, JSON.stringify(result), provider, model]
+    );
+  } catch (e: any) {
+    logger.warn(`Failed to write AI cache entry: ${e.message}`);
   }
 }
 
@@ -322,6 +360,14 @@ data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
     const { raw_snippet, fields, batch_label, file_label } = req.body as { raw_snippet?: string; fields?: string[]; batch_label?: string; file_label?: string };
     if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
     if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
+
+    const cacheKey = computeCacheKey('ai-extract', raw_snippet, JSON.stringify([...fields].sort()));
+    const cached = await getCachedResult(req.d360User.sub, cacheKey);
+    if (cached) {
+      await logAiUsage(req.d360User.sub, batch_label, file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+      ok(res, { fields: cached.result, provider: cached.provider, cached: true });
+      return;
+    }
 
     const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}
 
@@ -337,7 +383,8 @@ ${raw_snippet.slice(0, 4000)}
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
-    ok(res, { fields: result, provider: aiRes.provider });
+    await setCachedResult(req.d360User.sub, cacheKey, 'ai-extract', result, aiRes.provider, aiRes.model);
+    ok(res, { fields: result, provider: aiRes.provider, cached: false });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
@@ -358,6 +405,14 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     }
     const mediaType = mime_type as string;
 
+    const cacheKey = computeCacheKey('ai-extract-image', image_base64, JSON.stringify([...fields].sort()));
+    const cached = await getCachedResult(req.d360User.sub, cacheKey);
+    if (cached) {
+      await logAiUsage(req.d360User.sub, batch_label, file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+      ok(res, { fields: cached.result, provider: cached.provider, cached: true });
+      return;
+    }
+
     const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
 
     const aiRes = await callAI({ prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
@@ -367,7 +422,8 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
-    ok(res, { fields: result, provider: aiRes.provider });
+    await setCachedResult(req.d360User.sub, cacheKey, 'ai-extract-image', result, aiRes.provider, aiRes.model);
+    ok(res, { fields: result, provider: aiRes.provider, cached: false });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
@@ -455,6 +511,14 @@ data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) =>
     const { raw_snippet, batch_label, file_label } = req.body as { raw_snippet?: string; batch_label?: string; file_label?: string };
     if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
 
+    const cacheKey = computeCacheKey('ai-extract-auto', raw_snippet, 'auto');
+    const cached = await getCachedResult(req.d360User.sub, cacheKey);
+    if (cached) {
+      await logAiUsage(req.d360User.sub, batch_label, file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+      ok(res, { data: cached.result, provider: cached.provider, cached: true });
+      return;
+    }
+
     const prompt = `${AUTO_EXTRACTION_PROMPT}\n\nDocument text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
     const aiRes = await callAI({ prompt, maxTokens: 4096, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
@@ -463,7 +527,8 @@ data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) =>
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
-    ok(res, { data: result, provider: aiRes.provider });
+    await setCachedResult(req.d360User.sub, cacheKey, 'ai-extract-auto', result, aiRes.provider, aiRes.model);
+    ok(res, { data: result, provider: aiRes.provider, cached: false });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
@@ -479,6 +544,14 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
     }
     const mediaType = mime_type as string;
 
+    const cacheKey = computeCacheKey('ai-extract-image-auto', image_base64, 'auto');
+    const cached = await getCachedResult(req.d360User.sub, cacheKey);
+    if (cached) {
+      await logAiUsage(req.d360User.sub, batch_label, file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+      ok(res, { data: cached.result, provider: cached.provider, cached: true });
+      return;
+    }
+
     const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseArbitraryJson(aiRes.text);
@@ -486,7 +559,8 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
-    ok(res, { data: result, provider: aiRes.provider });
+    await setCachedResult(req.d360User.sub, cacheKey, 'ai-extract-image-auto', result, aiRes.provider, aiRes.model);
+    ok(res, { data: result, provider: aiRes.provider, cached: false });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
@@ -502,7 +576,7 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
 data360Router.get('/ai-usage', data360Auth, async (req: D360Req, res) => {
   try {
     const files = await query<any>(
-      `SELECT id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd, created_at
+      `SELECT id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd, from_cache, created_at
        FROM data360_ai_usage WHERE user_id=$1 ORDER BY created_at DESC LIMIT 500`,
       [req.d360User.sub]
     );
@@ -510,6 +584,7 @@ data360Router.get('/ai-usage', data360Auth, async (req: D360Req, res) => {
       `SELECT
          COALESCE(batch_label, '(unassigned)') AS batch_label,
          COUNT(*)::int AS file_count,
+         COUNT(*) FILTER (WHERE from_cache)::int AS cache_hits,
          SUM(pages)::int AS total_pages,
          SUM(input_tokens)::int AS total_input_tokens,
          SUM(output_tokens)::int AS total_output_tokens,
@@ -522,7 +597,24 @@ data360Router.get('/ai-usage', data360Auth, async (req: D360Req, res) => {
        ORDER BY MAX(created_at) DESC`,
       [req.d360User.sub]
     );
-    ok(res, { files, batches });
+    const cacheStats = await queryOne<any>(
+      `SELECT COUNT(*)::int AS total_calls, COUNT(*) FILTER (WHERE from_cache)::int AS cache_hits
+       FROM data360_ai_usage WHERE user_id=$1`,
+      [req.d360User.sub]
+    );
+    ok(res, { files, batches, cacheStats });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+// Lets a user force-refresh extraction for documents they know have changed
+// upstream (or just want re-run against a live provider instead of a
+// cached result) without needing a way to target individual cache entries.
+data360Router.delete('/ai-cache', data360Auth, async (req: D360Req, res) => {
+  try {
+    const deleted = await query<any>('DELETE FROM data360_ai_cache WHERE user_id=$1 RETURNING id', [req.d360User.sub]);
+    ok(res, { cleared: deleted.length });
   } catch (e: any) {
     fail(res, e.message, 500);
   }

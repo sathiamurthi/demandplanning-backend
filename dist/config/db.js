@@ -2919,5 +2919,25 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_data360_ai_usage_batch ON data360_ai_usage(user_id, batch_label);
       `
         },
+        {
+            name: '075_data360_ai_cache',
+            sql: `
+        CREATE TABLE IF NOT EXISTS data360_ai_cache (
+          id           UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id      UUID          REFERENCES data360_users(id) ON DELETE CASCADE,
+          cache_key    VARCHAR(128)  NOT NULL,
+          endpoint     VARCHAR(40)   NOT NULL,
+          result_json  JSONB         NOT NULL,
+          provider     VARCHAR(30),
+          model        VARCHAR(100),
+          hit_count    INT           NOT NULL DEFAULT 0,
+          created_at   TIMESTAMPTZ   DEFAULT NOW(),
+          last_hit_at  TIMESTAMPTZ
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_data360_ai_cache_key ON data360_ai_cache(user_id, cache_key);
+
+        ALTER TABLE data360_ai_usage ADD COLUMN IF NOT EXISTS from_cache BOOLEAN NOT NULL DEFAULT FALSE;
+      `
+        },
     ];
 }
