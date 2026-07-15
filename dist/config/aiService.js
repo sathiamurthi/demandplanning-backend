@@ -120,7 +120,12 @@ async function callAnthropic(params) {
     if (params.cacheablePrompt) {
         content.push({ type: 'text', text: params.cacheablePrompt, cache_control: { type: 'ephemeral' } });
     }
-    if (params.imageBase64) {
+    if (params.images?.length) {
+        for (const img of params.images) {
+            content.push({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } });
+        }
+    }
+    else if (params.imageBase64) {
         content.push({ type: 'image', source: { type: 'base64', media_type: params.mimeType || 'image/png', data: params.imageBase64 } });
     }
     content.push({ type: 'text', text: params.prompt });
@@ -142,11 +147,17 @@ async function callGeminiProvider(params) {
     // the dynamic document text) — Gemini 2.5 models apply "implicit caching"
     // automatically to a repeated leading prefix, no explicit cache API needed.
     let contents;
-    if (params.imageBase64) {
+    if (params.images?.length || params.imageBase64) {
         const parts = [];
         if (params.cacheablePrompt)
             parts.push({ text: params.cacheablePrompt });
-        parts.push({ inlineData: { mimeType: params.mimeType || 'image/png', data: params.imageBase64 } });
+        if (params.images?.length) {
+            for (const img of params.images)
+                parts.push({ inlineData: { mimeType: img.mimeType || 'image/png', data: img.base64 } });
+        }
+        else {
+            parts.push({ inlineData: { mimeType: params.mimeType || 'image/png', data: params.imageBase64 } });
+        }
         parts.push({ text: params.prompt });
         contents = [{ role: 'user', parts }];
     }
@@ -175,11 +186,17 @@ async function callAzureOpenAI(params) {
     // dynamic prompt text) — Azure/OpenAI apply automatic prompt caching to a
     // repeated identical prefix >=1024 tokens, no explicit cache API needed.
     let userContent;
-    if (params.imageBase64) {
+    if (params.images?.length || params.imageBase64) {
         const parts = [];
         if (params.cacheablePrompt)
             parts.push({ type: 'text', text: params.cacheablePrompt });
-        parts.push({ type: 'image_url', image_url: { url: `data:${params.mimeType || 'image/png'};base64,${params.imageBase64}` } });
+        if (params.images?.length) {
+            for (const img of params.images)
+                parts.push({ type: 'image_url', image_url: { url: `data:${img.mimeType || 'image/png'};base64,${img.base64}` } });
+        }
+        else {
+            parts.push({ type: 'image_url', image_url: { url: `data:${params.mimeType || 'image/png'};base64,${params.imageBase64}` } });
+        }
         parts.push({ type: 'text', text: params.prompt });
         userContent = parts;
     }

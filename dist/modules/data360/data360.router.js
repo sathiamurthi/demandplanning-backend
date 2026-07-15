@@ -607,6 +607,138 @@ exports.data360Router.post('/ai-extract-image-auto', data360Auth, async (req, re
         fail(res, e.message, 500);
     }
 });
+// ── SCHOOL — CHAPTER TO STUDY PACK ────────────────────────────────────────
+// A different shape of request from the extraction endpoints above: instead
+// of *locating* values that already exist in a document, this *generates*
+// new, simplified content (a study plan, plain-language explanations, a
+// quick-reference sheet) from a textbook chapter — there's nothing to
+// "extract" here, so it always goes through AI, never a field list. Same
+// callAI() fallback chain, cost-effective provider ordering, and
+// content-hash cache as the extraction endpoints, just a different prompt
+// and a class/board-aware cache discriminator (the same chapter prepared
+// for a different class/board is a genuinely different result).
+const SCHOOL_STUDY_GUIDE_PROMPT = `You are an expert school teacher creating a personalized study pack from one textbook chapter for a specific student. The student's class/grade and education board are given below the instructions, along with the chapter's content (as text or page images).
+
+Produce a single JSON object — a "Study Pack" — with this exact structure:
+{
+  "chapter_title": string,
+  "subject": string,
+  "core_concepts": [ { "concept": string, "simple_explanation": string, "why_it_matters": string } ],
+  "key_terms": [ { "term": string, "meaning": string } ],
+  "study_plan": [ { "step": number, "focus": string, "time_minutes": number, "activity": string } ],
+  "quick_reference": string[],
+  "practice_questions": [ { "question": string, "hint": string, "difficulty": "easy" | "medium" | "hard" } ],
+  "common_mistakes": string[]
+}
+
+FOLLOW THESE RULES EXACTLY:
+1. Calibrate vocabulary and depth exactly to the stated class/grade and board — a younger class needs shorter sentences and everyday analogies; an older class can handle more technical precision. Different boards (CBSE, ICSE, State, IB, Cambridge...) emphasize different depth/style — match it.
+2. "simple_explanation" must genuinely simplify — no unexplained jargon inside the explanation itself; define any term that's actually necessary separately in "key_terms" instead.
+3. "study_plan" is a short, realistic sequence (typically 3-6 steps) a student could actually follow in one sitting, with a sensible time_minutes per step.
+4. "quick_reference" is the exam-ready bullet list — only the single most important facts, formulas, dates, or definitions to remember, nothing else.
+5. "practice_questions" give a hint, never the answer.
+6. Do not invent facts that are not present in the given chapter content. If the content looks like a partial/incomplete chapter, still produce the best possible pack from what's there — do not refuse.
+7. Return ONLY valid JSON — no markdown fences, no commentary before or after.`;
+function buildStudyGuideDynamicPrompt(classLevel, board, subject, tail) {
+    return [
+        `Student's class/grade: ${classLevel}`,
+        `Education board: ${board}`,
+        subject ? `Subject: ${subject}` : '',
+        '',
+        tail,
+    ].filter(Boolean).join('\n');
+}
+exports.data360Router.post('/school/study-guide', data360Auth, async (req, res) => {
+    try {
+        const { raw_snippet, class_level, board, subject, file_label } = req.body;
+        if (!raw_snippet?.trim()) {
+            fail(res, 'raw_snippet is required');
+            return;
+        }
+        if (!class_level?.trim()) {
+            fail(res, 'class_level is required');
+            return;
+        }
+        if (!board?.trim()) {
+            fail(res, 'board is required');
+            return;
+        }
+        const discriminator = `${class_level.trim().toLowerCase()}|${board.trim().toLowerCase()}|${(subject || '').trim().toLowerCase()}`;
+        const cacheKey = computeCacheKey('school-study-guide', raw_snippet, discriminator);
+        const cached = await getCachedResult(req.d360User.sub, cacheKey);
+        if (cached) {
+            await logAiUsage(req.d360User.sub, 'School', file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+            ok(res, { data: cached.result, provider: cached.provider, cached: true });
+            return;
+        }
+        const prompt = buildStudyGuideDynamicPrompt(class_level, board, subject, `Chapter content:\n"""\n${raw_snippet.slice(0, 12000)}\n"""\n\nNow produce the Study Pack JSON.`);
+        const aiRes = await (0, aiService_1.callAI)({ cacheablePrompt: SCHOOL_STUDY_GUIDE_PROMPT, prompt, maxTokens: 6000, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)() });
+        await logAiUsage(req.d360User.sub, 'School', file_label, aiRes);
+        const result = parseArbitraryJson(aiRes.text);
+        if (!result) {
+            fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
+            return;
+        }
+        await setCachedResult(req.d360User.sub, cacheKey, 'school-study-guide', result, aiRes.provider, aiRes.model);
+        ok(res, { data: result, provider: aiRes.provider, cached: false });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.data360Router.post('/school/study-guide-image', data360Auth, async (req, res) => {
+    try {
+        const { images, class_level, board, subject, file_label } = req.body;
+        if (!Array.isArray(images) || images.length === 0) {
+            fail(res, 'images must be a non-empty array');
+            return;
+        }
+        if (images.length > 10) {
+            fail(res, 'Up to 10 chapter pages per call.');
+            return;
+        }
+        for (const img of images) {
+            if (!IMAGE_MIME_TYPES.includes(img.mime_type || '')) {
+                fail(res, `Unsupported file type "${img.mime_type || 'unknown'}" — this endpoint accepts real image bytes only (png/jpeg/webp/gif). Convert PDF pages to images before sending.`, 400);
+                return;
+            }
+        }
+        if (!class_level?.trim()) {
+            fail(res, 'class_level is required');
+            return;
+        }
+        if (!board?.trim()) {
+            fail(res, 'board is required');
+            return;
+        }
+        const content = images.map(img => img.image_base64).join('|');
+        const discriminator = `${class_level.trim().toLowerCase()}|${board.trim().toLowerCase()}|${(subject || '').trim().toLowerCase()}`;
+        const cacheKey = computeCacheKey('school-study-guide-image', content, discriminator);
+        const cached = await getCachedResult(req.d360User.sub, cacheKey);
+        if (cached) {
+            await logAiUsage(req.d360User.sub, 'School', file_label, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, images.length, true);
+            ok(res, { data: cached.result, provider: cached.provider, cached: true });
+            return;
+        }
+        const prompt = buildStudyGuideDynamicPrompt(class_level, board, subject, `Read the attached chapter page image(s) now and produce the Study Pack JSON.`);
+        const aiRes = await (0, aiService_1.callAI)({
+            cacheablePrompt: SCHOOL_STUDY_GUIDE_PROMPT, prompt,
+            images: images.map(img => ({ base64: img.image_base64, mimeType: img.mime_type })),
+            maxTokens: 6000, jsonResponse: true, preferredOrder: (0, aiService_1.costEffectiveOrder)(),
+        });
+        await logAiUsage(req.d360User.sub, 'School', file_label, aiRes, images.length);
+        const result = parseArbitraryJson(aiRes.text);
+        if (!result) {
+            fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
+            return;
+        }
+        await setCachedResult(req.d360User.sub, cacheKey, 'school-study-guide-image', result, aiRes.provider, aiRes.model);
+        ok(res, { data: result, provider: aiRes.provider, cached: false });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
 // ── AI USAGE (Settings — cost/token tracking) ─────────────────────────────
 // Two views over the same log: `files` is one row per AI call (what the
 // caller asked for — "total tokens for each file"), `batches` rolls that up
