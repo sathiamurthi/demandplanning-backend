@@ -14,8 +14,8 @@ import bcrypt from 'bcryptjs';
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import * as XLSX from 'xlsx';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import Anthropic from '@anthropic-ai/sdk';
 import { query, queryOne, withTransaction, runMigrations } from '../../config/db';
+import { callAI } from '../../config/aiService';
 
 export const data360Router = Router();
 
@@ -242,17 +242,21 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
 
 // ── AI-ENHANCED EXTRACTION (run in parallel with the client-side heuristic,
 // for the caller to compare) ──────────────────────────────────────────────
-// Two entry points, one prompt/response contract:
+// Two entry points, one prompt/response contract, both routed through the
+// shared callAI() component (config/aiService.ts) — which tries Anthropic,
+// then Gemini, then Azure OpenAI in order and automatically falls back to
+// the next configured provider if one fails (out of credits, rate limited,
+// transient outage), rather than every caller hand-rolling its own
+// provider-switching logic:
 //  - /ai-extract       — text in (raw OCR/PDF/voice text), for channels
 //    where the text itself is already reliable (PDF text layer, speech-to-
-//    text). Reuses the exact Anthropic call pattern already live in
-//    ai.service.ts (model claude-haiku-4-5-20251001).
-//  - /ai-extract-image — image in, read directly by Claude's vision. Real
-//    stylized/graphic documents (colored headers, decorative fonts,
+//    text).
+//  - /ai-extract-image — image in, read directly by the model's vision.
+//    Real stylized/graphic documents (colored headers, decorative fonts,
 //    watermarks) can make Tesseract's OCR come back as near-total garbage —
-//    at that point there's no usable text for ANY regex or LLM-on-text
-//    approach to work from. Reading the image directly skips that failure
-//    mode entirely for the screenshot channel.
+//    at that point there's no usable text for ANY regex or text-based AI
+//    call to work from. Reading the image directly skips that failure mode
+//    entirely for the screenshot channel.
 // Both are explicitly a side-by-side comparison, not a replacement: the
 // client calls one of these in addition to its own heuristic and lets the
 // user pick whichever value is right per field, rather than trusting
@@ -290,9 +294,6 @@ data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
     if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
     if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
-    if (!apiKey) { fail(res, 'AI extraction is not configured on this server (ANTHROPIC_API_KEY / CLAUDE_API_KEY missing).', 503); return; }
-
     const prompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}
 
 Raw text:
@@ -300,27 +301,22 @@ Raw text:
 ${raw_snippet.slice(0, 4000)}
 """`;
 
-    const anthropic = new Anthropic({ apiKey });
-    const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const rawText = (msg.content[0] as any).text as string;
-    const result = parseExtractionResponse(rawText, fields);
-    if (!result) { fail(res, 'AI returned invalid JSON — please try again', 502); return; }
-    ok(res, { fields: result });
+    const aiRes = await callAI({ prompt, maxTokens: 1500, jsonResponse: true });
+    const result = parseExtractionResponse(aiRes.text, fields);
+    if (!result) {
+      fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
+      return;
+    }
+    ok(res, { fields: result, provider: aiRes.provider });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
 });
 
-// Image goes straight to Gemini's vision — bypasses the client's Tesseract
-// OCR entirely, which is the fix for documents where OCR itself fails
-// (stylized invoice templates, low-contrast scans, watermarked images).
-// Uses Gemini rather than Claude here specifically because the Anthropic
-// key on this deployment is out of credits; Gemini is equally capable for
-// this read-the-image-and-return-JSON task.
+// Image goes straight to the model's vision — bypasses the client's
+// Tesseract OCR entirely, which is the fix for documents where OCR itself
+// fails (stylized invoice templates, low-contrast scans, watermarked
+// images).
 data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) => {
   try {
     const { image_base64, mime_type, fields } = req.body as { image_base64?: string; mime_type?: string; fields?: string[] };
@@ -330,24 +326,15 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
     const mediaType = ALLOWED_MIME.includes(mime_type || '') ? (mime_type as string) : 'image/png';
 
-    if (!process.env.GEMINI_API_KEY) { fail(res, 'AI extraction is not configured on this server (GEMINI_API_KEY missing).', 503); return; }
-
     const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
 
-    const { callGeminiVision } = await import('../auth/gemini.service');
-    const geminiRes = await callGeminiVision({
-      prompt,
-      imageBase64: image_base64,
-      mimeType: mediaType,
-      responseMimeType: 'application/json',
-      maxTokens: 1500,
-    });
-    const result = parseExtractionResponse(geminiRes.text, fields);
+    const aiRes = await callAI({ prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
+    const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
-      fail(res, `AI returned invalid JSON — please try again. Raw response: ${geminiRes.text.slice(0, 300)}`, 502);
+      fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
-    ok(res, { fields: result });
+    ok(res, { fields: result, provider: aiRes.provider });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
