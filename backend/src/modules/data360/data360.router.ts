@@ -303,7 +303,7 @@ ${raw_snippet.slice(0, 4000)}
     const anthropic = new Anthropic({ apiKey });
     const msg = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
+      max_tokens: 1500,
       messages: [{ role: 'user', content: prompt }],
     });
     const rawText = (msg.content[0] as any).text as string;
@@ -340,7 +340,7 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
       imageBase64: image_base64,
       mimeType: mediaType,
       responseMimeType: 'application/json',
-      maxTokens: 500,
+      maxTokens: 1500,
     });
     const result = parseExtractionResponse(geminiRes.text, fields);
     if (!result) {
