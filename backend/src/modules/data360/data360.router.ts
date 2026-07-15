@@ -269,7 +269,8 @@ Rules:
 - If a field name suggests an itemized/line-item breakdown (e.g. "Item-wise Breakdown", "Line Items"), return its value as a single string listing each item as "name: value" separated by "; ".
 - If a field asks for a total/subtotal/amount, match the label exactly — a field named "Sub Total" should get the subtotal specifically, not the grand total, and a field named "Total"/"Grand Total"/"Net Payable" should get the final amount, not the subtotal.
 - Never use a bill number, HSN code, GSTIN, phone number, or any other ID as an amount.
-- If a value truly cannot be found, use an empty string for that field.`;
+- If a field asks for any kind of date (e.g. "Due Date", "Bill Date", "Invoice Date") and the document only prints a single, unlabeled or differently-labeled date, use that date rather than leaving the field empty — do not require an exact label match for dates the way you would for an amount.
+- If a value truly cannot be found anywhere in the document, use an empty string for that field.`;
 }
 
 function parseExtractionResponse(rawText: string, fields: string[]): Record<string, string> | null {
