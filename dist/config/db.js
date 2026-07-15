@@ -2939,5 +2939,16 @@ END $$;
         ALTER TABLE data360_ai_usage ADD COLUMN IF NOT EXISTS from_cache BOOLEAN NOT NULL DEFAULT FALSE;
       `
         },
+        {
+            // Usage-gated free trial: 2 free documents (rows across all of a
+            // user's batches, matching the unit the paid packages sell in — "100
+            // documents"), then a paywall. purchased_document_quota is credited
+            // manually today (superadmin grants it after payment is confirmed
+            // out-of-band) — see POST /admin/grant-quota.
+            name: '076_data360_quota',
+            sql: `
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS purchased_document_quota INT NOT NULL DEFAULT 0;
+      `
+        },
     ];
 }

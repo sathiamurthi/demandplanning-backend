@@ -83,6 +83,29 @@ data360Router.post('/admin/run-migrations', async (req, res) => {
   }
 });
 
+// ── ADMIN: GRANT QUOTA (manual package activation) ────────────────────────
+// No live payment gateway is wired up yet — a package purchase is confirmed
+// out-of-band (bank transfer, UPI, invoice, whatever), then the superadmin
+// account calls this to credit the buyer's quota. Only callable by the one
+// unlimited superadmin account itself.
+data360Router.post('/admin/grant-quota', data360Auth, async (req: D360Req, res) => {
+  try {
+    if (!isUnlimitedUser(req.d360User.email)) { fail(res, 'Forbidden', 403); return; }
+    const { user_email, additional_documents } = req.body as { user_email?: string; additional_documents?: number };
+    if (!user_email?.trim() || !Number.isFinite(additional_documents) || (additional_documents as number) <= 0) {
+      fail(res, 'user_email and a positive additional_documents are required'); return;
+    }
+    const [updated] = await query<any>(
+      `UPDATE data360_users SET purchased_document_quota = purchased_document_quota + $1 WHERE email=$2 RETURNING id, email, purchased_document_quota`,
+      [additional_documents, user_email.trim().toLowerCase()]
+    );
+    if (!updated) { fail(res, 'No Data360 user found with that email', 404); return; }
+    ok(res, updated);
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ── REGISTER ─────────────────────────────────────────────────
 data360Router.post('/auth/register', async (req, res) => {
   try {
@@ -184,6 +207,48 @@ function validateRow(row: IngestRow, extractionFields: string[]): { verdict: str
   return { verdict: `${confidence}% Match [OK]`, level: 'ok', requiresReview: false };
 }
 
+// ── USAGE QUOTA (free trial + paid packages) ───────────────────────────────
+// 2 free documents (rows, across all of a user's batches — the same unit the
+// paid packages sell in, "100 documents"), then a paywall. Packages are
+// activated manually today: there's no live payment gateway wired up yet, so
+// a purchase is confirmed out-of-band and the superadmin account credits the
+// buyer's quota via POST /admin/grant-quota. Design deliberately keeps the
+// gate as a live COUNT query (not a stored counter) so it can never drift
+// out of sync with what's actually in the database.
+const FREE_DOCUMENT_LIMIT = 2;
+const DATA360_SUPERADMIN_EMAIL = 'superadmin@demandgeniusai.com';
+const DATA360_PACKAGES = [
+  { id: 'standard', name: 'Standard', documents: 100, price_inr: 1500, support: false },
+  { id: 'supported', name: 'Standard + Support', documents: 100, price_inr: 2000, support: true },
+];
+
+function isUnlimitedUser(email: string | undefined): boolean {
+  return (email || '').trim().toLowerCase() === DATA360_SUPERADMIN_EMAIL;
+}
+
+async function getDocumentUsage(userId: string): Promise<number> {
+  const row = await queryOne<any>(`SELECT COALESCE(SUM(total_rows),0)::int AS used FROM data360_batches WHERE user_id=$1`, [userId]);
+  return row?.used || 0;
+}
+
+async function getDocumentLimit(userId: string): Promise<number> {
+  const row = await queryOne<any>(`SELECT purchased_document_quota FROM data360_users WHERE id=$1`, [userId]);
+  return FREE_DOCUMENT_LIMIT + (row?.purchased_document_quota || 0);
+}
+
+data360Router.get('/quota', data360Auth, async (req: D360Req, res) => {
+  try {
+    if (isUnlimitedUser(req.d360User.email)) {
+      ok(res, { unlimited: true, used: 0, limit: null, remaining: null, packages: DATA360_PACKAGES });
+      return;
+    }
+    const [used, limit] = await Promise.all([getDocumentUsage(req.d360User.sub), getDocumentLimit(req.d360User.sub)]);
+    ok(res, { unlimited: false, used, limit, remaining: Math.max(limit - used, 0), packages: DATA360_PACKAGES });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ── CREATE BATCH (ingest) ──────────────────────────────────────
 // Frontend parses the source file (Excel/PDF/screenshot OCR/voice) client
 // side into a flat row array and posts it here for real server-side
@@ -193,6 +258,21 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
     const { name, source_channel, rows, extraction_fields, template_id } = req.body as { name: string; source_channel: string; rows: IngestRow[]; extraction_fields?: string[]; template_id?: string };
     if (!name?.trim()) { fail(res, 'name is required'); return; }
     if (!Array.isArray(rows) || rows.length === 0) { fail(res, 'rows must be a non-empty array'); return; }
+
+    if (!isUnlimitedUser(req.d360User.email)) {
+      const [used, limit] = await Promise.all([getDocumentUsage(req.d360User.sub), getDocumentLimit(req.d360User.sub)]);
+      if (used + rows.length > limit) {
+        res.status(402).json({
+          success: false,
+          error: `This batch has ${rows.length} document(s), but you only have ${Math.max(limit - used, 0)} left of your ${limit}-document quota.`,
+          code: 'QUOTA_EXCEEDED',
+          used, limit, remaining: Math.max(limit - used, 0), packages: DATA360_PACKAGES,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+
     let fieldNames = Array.isArray(extraction_fields) ? extraction_fields.filter(f => f && f.trim()) : [];
 
     // A saved template pre-fills the extraction field list so it doesn't need
