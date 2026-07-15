@@ -29,6 +29,31 @@ exports.callAI = callAI;
 const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const genai_1 = require("@google/genai");
 const logger_1 = require("./logger");
+// Approximate public list prices (USD per 1M tokens) as of this integration —
+// NOT fetched from each provider's billing API, so treat every cost figure
+// this produces as an estimate to sanity-check against the provider's own
+// current pricing page, not an invoice-grade number. Override via env vars
+// if a rate here is stale.
+const PRICING = {
+    'claude-haiku-4-5-20251001': {
+        inputPer1M: Number(process.env.PRICE_ANTHROPIC_INPUT_PER_1M) || 1.00,
+        outputPer1M: Number(process.env.PRICE_ANTHROPIC_OUTPUT_PER_1M) || 5.00,
+    },
+    'gemini-2.5-flash': {
+        inputPer1M: Number(process.env.PRICE_GEMINI_INPUT_PER_1M) || 0.30,
+        outputPer1M: Number(process.env.PRICE_GEMINI_OUTPUT_PER_1M) || 2.50,
+    },
+    'gpt-4o': {
+        inputPer1M: Number(process.env.PRICE_AZURE_INPUT_PER_1M) || 2.50,
+        outputPer1M: Number(process.env.PRICE_AZURE_OUTPUT_PER_1M) || 10.00,
+    },
+};
+function estimateCost(model, inputTokens, outputTokens) {
+    const rate = PRICING[model];
+    if (!rate)
+        return 0;
+    return (inputTokens / 1000000) * rate.inputPer1M + (outputTokens / 1000000) * rate.outputPer1M;
+}
 const DEFAULT_ORDER = ['anthropic', 'gemini', 'azure_openai'];
 function providerOrder() {
     const raw = process.env.AI_PROVIDER_ORDER;
@@ -73,7 +98,9 @@ async function callAnthropic(params) {
         messages: [{ role: 'user', content }],
     });
     const text = msg.content[0].text;
-    return { text, provider: 'anthropic', model };
+    const inputTokens = msg.usage?.input_tokens || 0;
+    const outputTokens = msg.usage?.output_tokens || 0;
+    return { text, provider: 'anthropic', model, inputTokens, outputTokens, estimatedCostUsd: estimateCost(model, inputTokens, outputTokens) };
 }
 async function callGeminiProvider(params) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -90,7 +117,9 @@ async function callGeminiProvider(params) {
             responseMimeType: params.jsonResponse ? 'application/json' : undefined,
         },
     });
-    return { text: response.text || '', provider: 'gemini', model };
+    const inputTokens = response.usageMetadata?.promptTokenCount || 0;
+    const outputTokens = response.usageMetadata?.candidatesTokenCount || 0;
+    return { text: response.text || '', provider: 'gemini', model, inputTokens, outputTokens, estimatedCostUsd: estimateCost(model, inputTokens, outputTokens) };
 }
 async function callAzureOpenAI(params) {
     const endpoint = process.env.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, '');
@@ -121,7 +150,9 @@ async function callAzureOpenAI(params) {
     }
     const json = await res.json();
     const text = json.choices?.[0]?.message?.content || '';
-    return { text, provider: 'azure_openai', model: deployment };
+    const inputTokens = json.usage?.prompt_tokens || 0;
+    const outputTokens = json.usage?.completion_tokens || 0;
+    return { text, provider: 'azure_openai', model: deployment, inputTokens, outputTokens, estimatedCostUsd: estimateCost(deployment, inputTokens, outputTokens) };
 }
 const CALLERS = {
     anthropic: callAnthropic,

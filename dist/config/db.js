@@ -2899,5 +2899,25 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_data360_gen_jobs_batch ON data360_generation_jobs(batch_id);
       `
         },
+        {
+            name: '074_data360_ai_usage',
+            sql: `
+        CREATE TABLE IF NOT EXISTS data360_ai_usage (
+          id                 UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id            UUID          REFERENCES data360_users(id) ON DELETE CASCADE,
+          batch_label        VARCHAR(300),
+          file_label         VARCHAR(300),
+          provider           VARCHAR(30)   NOT NULL,
+          model              VARCHAR(100)  NOT NULL,
+          input_tokens       INT           NOT NULL DEFAULT 0,
+          output_tokens      INT           NOT NULL DEFAULT 0,
+          pages              INT           NOT NULL DEFAULT 1,
+          estimated_cost_usd NUMERIC(12,6) NOT NULL DEFAULT 0,
+          created_at         TIMESTAMPTZ   DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_ai_usage_user ON data360_ai_usage(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_data360_ai_usage_batch ON data360_ai_usage(user_id, batch_label);
+      `
+        },
     ];
 }

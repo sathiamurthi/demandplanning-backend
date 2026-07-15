@@ -16,6 +16,7 @@ import * as XLSX from 'xlsx';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { query, queryOne, withTransaction, runMigrations } from '../../config/db';
 import { callAI } from '../../config/aiService';
+import { logger } from '../../config/logger';
 
 export const data360Router = Router();
 
@@ -298,9 +299,27 @@ function parseExtractionResponse(rawText: string, fields: string[]): Record<stri
   return result;
 }
 
+// Every successful AI call (even one whose JSON fails to parse — the model
+// still generated real, billable output) gets logged here so cost/token use
+// is visible per file and per batch in Settings, not just inferred from a
+// provider's own dashboard after the fact.
+async function logAiUsage(userId: string, batchLabel: string | undefined, fileLabel: string | undefined, aiRes: { provider: string; model: string; inputTokens: number; outputTokens: number }, pages = 1) {
+  try {
+    await query(
+      `INSERT INTO data360_ai_usage (user_id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [userId, batchLabel || null, fileLabel || null, aiRes.provider, aiRes.model, aiRes.inputTokens, aiRes.outputTokens, pages,
+        (aiRes as any).estimatedCostUsd || 0]
+    );
+  } catch (e: any) {
+    // Usage logging must never break the actual extraction response.
+    logger.warn(`Failed to log AI usage: ${e.message}`);
+  }
+}
+
 data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
   try {
-    const { raw_snippet, fields } = req.body as { raw_snippet?: string; fields?: string[] };
+    const { raw_snippet, fields, batch_label, file_label } = req.body as { raw_snippet?: string; fields?: string[]; batch_label?: string; file_label?: string };
     if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
     if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
 
@@ -312,6 +331,7 @@ ${raw_snippet.slice(0, 4000)}
 """`;
 
     const aiRes = await callAI({ prompt, maxTokens: 1500, jsonResponse: true });
+    await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
@@ -329,7 +349,7 @@ ${raw_snippet.slice(0, 4000)}
 // images).
 data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) => {
   try {
-    const { image_base64, mime_type, fields } = req.body as { image_base64?: string; mime_type?: string; fields?: string[] };
+    const { image_base64, mime_type, fields, batch_label, file_label } = req.body as { image_base64?: string; mime_type?: string; fields?: string[]; batch_label?: string; file_label?: string };
     if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
     if (!Array.isArray(fields) || fields.length === 0) { fail(res, 'fields must be a non-empty array'); return; }
     if (!IMAGE_MIME_TYPES.includes(mime_type || '')) {
@@ -341,6 +361,7 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     const prompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
 
     const aiRes = await callAI({ prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true });
+    await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
@@ -431,11 +452,12 @@ function parseArbitraryJson(rawText: string): any | null {
 
 data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) => {
   try {
-    const { raw_snippet } = req.body as { raw_snippet?: string };
+    const { raw_snippet, batch_label, file_label } = req.body as { raw_snippet?: string; batch_label?: string; file_label?: string };
     if (!raw_snippet?.trim()) { fail(res, 'raw_snippet is required'); return; }
 
     const prompt = `${AUTO_EXTRACTION_PROMPT}\n\nDocument text:\n"""\n${raw_snippet.slice(0, 8000)}\n"""`;
-    const aiRes = await callAI({ prompt, maxTokens: 3000, jsonResponse: true });
+    const aiRes = await callAI({ prompt, maxTokens: 4096, jsonResponse: true });
+    await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseArbitraryJson(aiRes.text);
     if (!result) {
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
@@ -449,7 +471,7 @@ data360Router.post('/ai-extract-auto', data360Auth, async (req: D360Req, res) =>
 
 data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, res) => {
   try {
-    const { image_base64, mime_type } = req.body as { image_base64?: string; mime_type?: string };
+    const { image_base64, mime_type, batch_label, file_label } = req.body as { image_base64?: string; mime_type?: string; batch_label?: string; file_label?: string };
     if (!image_base64?.trim()) { fail(res, 'image_base64 is required'); return; }
     if (!IMAGE_MIME_TYPES.includes(mime_type || '')) {
       fail(res, `Unsupported file type "${mime_type || 'unknown'}" — this endpoint accepts real image bytes only (png/jpeg/webp/gif). Convert PDF pages to images before sending.`, 400);
@@ -457,13 +479,50 @@ data360Router.post('/ai-extract-image-auto', data360Auth, async (req: D360Req, r
     }
     const mediaType = mime_type as string;
 
-    const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 3000, jsonResponse: true });
+    const aiRes = await callAI({ prompt: AUTO_EXTRACTION_PROMPT, imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true });
+    await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseArbitraryJson(aiRes.text);
     if (!result) {
       fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
     ok(res, { data: result, provider: aiRes.provider });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+// ── AI USAGE (Settings — cost/token tracking) ─────────────────────────────
+// Two views over the same log: `files` is one row per AI call (what the
+// caller asked for — "total tokens for each file"), `batches` rolls that up
+// by batch_label (what the caller asked for — "total pages, cost, for each
+// batch"). Costs are estimates (see PRICING in aiService.ts) — not pulled
+// from a provider billing API, so treat them as a sanity-check figure, not
+// an invoice.
+data360Router.get('/ai-usage', data360Auth, async (req: D360Req, res) => {
+  try {
+    const files = await query<any>(
+      `SELECT id, batch_label, file_label, provider, model, input_tokens, output_tokens, pages, estimated_cost_usd, created_at
+       FROM data360_ai_usage WHERE user_id=$1 ORDER BY created_at DESC LIMIT 500`,
+      [req.d360User.sub]
+    );
+    const batches = await query<any>(
+      `SELECT
+         COALESCE(batch_label, '(unassigned)') AS batch_label,
+         COUNT(*)::int AS file_count,
+         SUM(pages)::int AS total_pages,
+         SUM(input_tokens)::int AS total_input_tokens,
+         SUM(output_tokens)::int AS total_output_tokens,
+         SUM(estimated_cost_usd)::numeric(12,6) AS total_cost_usd,
+         MIN(created_at) AS started_at,
+         MAX(created_at) AS last_used_at
+       FROM data360_ai_usage
+       WHERE user_id=$1
+       GROUP BY COALESCE(batch_label, '(unassigned)')
+       ORDER BY MAX(created_at) DESC`,
+      [req.d360User.sub]
+    );
+    ok(res, { files, batches });
   } catch (e: any) {
     fail(res, e.message, 500);
   }
