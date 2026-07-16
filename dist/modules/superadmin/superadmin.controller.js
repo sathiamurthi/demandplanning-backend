@@ -23,6 +23,7 @@ exports.listRide360Invites = listRide360Invites;
 exports.getRide360AIUsage = getRide360AIUsage;
 exports.getSafeRide360Overview = getSafeRide360Overview;
 exports.listSafeRide360Organizations = listSafeRide360Organizations;
+exports.activateSafeRide360Subscription = activateSafeRide360Subscription;
 exports.listSafeRide360Trips = listSafeRide360Trips;
 exports.getPlatformConfig = getPlatformConfig;
 exports.setPlatformConfig = setPlatformConfig;
@@ -393,6 +394,30 @@ async function listSafeRide360Organizations(req, res) {
         res.status(500).json({ success: false, error: e.message });
     }
 }
+// No live payment gateway is wired up for SafeRide360 (same reasoning as
+// Data360's manual quota grant) — a package purchase is confirmed
+// out-of-band, then the superadmin extends the organization's paid-up-until
+// date here.
+async function activateSafeRide360Subscription(req, res) {
+    try {
+        const { organization_id, months } = req.body;
+        if (!organization_id || !Number.isFinite(months) || months <= 0) {
+            res.status(400).json({ success: false, error: "organization_id and a positive months are required" });
+            return;
+        }
+        const [updated] = await (0, db_1.query)(`UPDATE saferide360_organizations
+       SET subscription_active_until = GREATEST(COALESCE(subscription_active_until, NOW()), NOW()) + ($1 || ' months')::interval
+       WHERE id=$2 RETURNING id, name, subscription_active_until`, [months, organization_id]);
+        if (!updated) {
+            res.status(404).json({ success: false, error: "Organization not found" });
+            return;
+        }
+        res.json({ success: true, data: updated });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
 async function listSafeRide360Trips(req, res) {
     try {
         const limit = Math.min(200, parseInt(req.query.limit || "100"));
@@ -438,6 +463,7 @@ router.get("/ride360/ai-usage", getRide360AIUsage);
 router.get("/saferide360/overview", getSafeRide360Overview);
 router.get("/saferide360/organizations", listSafeRide360Organizations);
 router.get("/saferide360/trips", listSafeRide360Trips);
+router.post("/saferide360/activate-subscription", activateSafeRide360Subscription);
 exports.default = router;
 // ── Platform Config CRUD ────────────────────────────────────────────────────
 async function getPlatformConfig(_req, res) {

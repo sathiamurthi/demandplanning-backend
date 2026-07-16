@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.saferide360Router = void 0;
+exports.runSafeRide360LocationUpdateJob = runSafeRide360LocationUpdateJob;
 exports.runSafeRide360RetentionJob = runSafeRide360RetentionJob;
 // ============================================================
 // saferide360.router.ts — SafeRide360 API (child-safety-first transport
@@ -69,7 +70,22 @@ function requireGuardian(req, res, next) {
 }
 // ── Row -> frontend-shape mappers ─────────────────────────────
 function mapOrg(row) {
-    return { id: row.id, name: row.name, orgType: row.org_type, createdAt: row.created_at };
+    return {
+        id: row.id, name: row.name, orgType: row.org_type, createdAt: row.created_at,
+        trialEndsAt: row.trial_ends_at, subscriptionActiveUntil: row.subscription_active_until || undefined,
+        planRateInrPerPassenger: row.plan_rate_inr_per_passenger,
+    };
+}
+// Package plan: INR 100/passenger/month by default (per-org, in case a
+// future negotiated rate differs). Active if still inside the trial
+// window OR paid up (subscription_active_until in the future).
+function isSubscriptionActive(org) {
+    const now = Date.now();
+    if (org.trial_ends_at && new Date(org.trial_ends_at).getTime() > now)
+        return true;
+    if (org.subscription_active_until && new Date(org.subscription_active_until).getTime() > now)
+        return true;
+    return false;
 }
 function mapDriver(row) {
     return { id: row.id, organizationId: row.organization_id, name: row.name, phone: row.phone, vehicleNumber: row.vehicle_number, vehicleType: row.vehicle_type, createdAt: row.created_at };
@@ -182,6 +198,51 @@ exports.saferide360Router.get('/auth/driver/me', srAuth, requireDriver, async (r
         }
         const org = await (0, db_1.queryOne)('SELECT * FROM saferide360_organizations WHERE id=$1', [driver.organization_id]);
         ok(res, { driver: mapDriver(driver), organization: org ? mapOrg(org) : null });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// Vehicle registration/type were captured at driver registration — this
+// lets a driver correct/update them afterward (e.g. a vehicle swap)
+// without re-registering.
+exports.saferide360Router.patch('/auth/driver/vehicle', srAuth, requireDriver, async (req, res) => {
+    try {
+        const { vehicle_number, vehicle_type } = req.body;
+        if (vehicle_type && !['auto', 'van', 'bus', 'car'].includes(vehicle_type)) {
+            fail(res, 'vehicle_type must be one of auto, van, bus, car');
+            return;
+        }
+        const [driver] = await (0, db_1.query)(`UPDATE saferide360_drivers SET vehicle_number=COALESCE($1,vehicle_number), vehicle_type=COALESCE($2,vehicle_type) WHERE id=$3 RETURNING *`, [vehicle_number, vehicle_type, req.srUser.sub]);
+        if (!driver) {
+            fail(res, 'Driver not found', 404);
+            return;
+        }
+        ok(res, mapDriver(driver));
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// Package plan: INR 100/passenger/month (org-configurable rate). Shows the
+// driver dashboard exactly what they're paying for and when the free trial
+// ends — no surprise paywall at Start Trip.
+exports.saferide360Router.get('/organization/billing', srAuth, requireDriver, async (req, res) => {
+    try {
+        const driver = await (0, db_1.queryOne)('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser.sub]);
+        const org = await (0, db_1.queryOne)('SELECT * FROM saferide360_organizations WHERE id=$1', [driver.organization_id]);
+        if (!org) {
+            fail(res, 'Organization not found', 404);
+            return;
+        }
+        const passengerCount = await (0, db_1.queryOne)('SELECT COUNT(*)::int AS n FROM saferide360_passengers WHERE organization_id=$1', [driver.organization_id]);
+        ok(res, {
+            organization: mapOrg(org),
+            passengerCount: passengerCount.n,
+            monthlyCost: passengerCount.n * org.plan_rate_inr_per_passenger,
+            isActive: isSubscriptionActive(org),
+            inTrial: new Date(org.trial_ends_at).getTime() > Date.now(),
+        });
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -426,6 +487,19 @@ exports.saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async 
             fail(res, 'Trip is already active');
             return;
         }
+        const org = await (0, db_1.queryOne)('SELECT * FROM saferide360_organizations WHERE id=$1', [trip.organization_id]);
+        if (!isSubscriptionActive(org)) {
+            const passengerCount = await (0, db_1.queryOne)('SELECT COUNT(*)::int AS n FROM saferide360_passengers WHERE organization_id=$1', [trip.organization_id]);
+            const monthlyCost = passengerCount.n * org.plan_rate_inr_per_passenger;
+            res.status(402).json({
+                success: false,
+                error: `Your free trial has ended. ${org.name} has ${passengerCount.n} passenger(s) — ₹${org.plan_rate_inr_per_passenger}/passenger/month = ₹${monthlyCost}/month to continue.`,
+                code: 'SUBSCRIPTION_REQUIRED',
+                passengerCount: passengerCount.n, ratePerPassenger: org.plan_rate_inr_per_passenger, monthlyCost,
+                timestamp: new Date().toISOString(),
+            });
+            return;
+        }
         const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
         const passengers = await (0, db_1.query)(`SELECT * FROM saferide360_passengers WHERE organization_id=$1 AND ${stopCol} IS NOT NULL`, [trip.organization_id]);
         for (const p of passengers) {
@@ -528,6 +602,16 @@ exports.saferide360Router.post('/trips/:id/complete', srAuth, requireDriver, asy
 // Driver-facing SOS — cheap to have in MVP (just another WhatsApp broadcast
 // + notification rows), matching the product's own "are they safe?"
 // guiding principle rather than deferring it to "future."
+// Shared by SOS and the general trip-alert broadcast below — both are the
+// exact same delivery mechanism (every guardian with a passenger on this
+// specific trip, and only this trip), just different urgency/type tagging.
+async function broadcastToTripGuardians(tripId, type, text) {
+    const passengers = await (0, db_1.query)(`SELECT p.* FROM saferide360_trip_passengers tp JOIN saferide360_passengers p ON p.id = tp.passenger_id WHERE tp.trip_id=$1`, [tripId]);
+    for (const p of passengers) {
+        await pushGuardianNotif(p.guardian_phone, type, text, tripId, p.id);
+    }
+    return passengers.length;
+}
 exports.saferide360Router.post('/trips/:id/sos', srAuth, requireDriver, async (req, res) => {
     try {
         const trip = await (0, db_1.queryOne)('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser.sub]);
@@ -536,11 +620,41 @@ exports.saferide360Router.post('/trips/:id/sos', srAuth, requireDriver, async (r
             return;
         }
         const driver = await (0, db_1.queryOne)('SELECT * FROM saferide360_drivers WHERE id=$1', [req.srUser.sub]);
-        const passengers = await (0, db_1.query)(`SELECT p.* FROM saferide360_trip_passengers tp JOIN saferide360_passengers p ON p.id = tp.passenger_id WHERE tp.trip_id=$1`, [trip.id]);
-        for (const p of passengers) {
-            await pushGuardianNotif(p.guardian_phone, 'sos', `🚨 *Emergency alert* on ${trip.name} — driver ${driver.name} (${driver.vehicle_number}) has raised an SOS. Please contact the school immediately.`, trip.id, p.id);
+        const alerted = await broadcastToTripGuardians(trip.id, 'sos', `🚨 *Emergency alert* on ${trip.name} — driver ${driver.name} (${driver.vehicle_number}) has raised an SOS. Please contact the school immediately.`);
+        ok(res, { alerted });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// Driver-authored update — vehicle issue / traffic / delay / anything else
+// worth telling every parent on this specific trip, typed or (client-side)
+// transcribed from a voice recording. Not an emergency — same delivery
+// mechanism as SOS, lower urgency framing.
+const ALERT_TYPE_LABELS = {
+    delay: '⏰ Delay',
+    traffic: '🚦 Traffic',
+    vehicle_issue: '🔧 Vehicle Issue',
+    custom: '📢 Update',
+};
+exports.saferide360Router.post('/trips/:id/alert', srAuth, requireDriver, async (req, res) => {
+    try {
+        const { message, alert_type } = req.body;
+        if (!message?.trim()) {
+            fail(res, 'message is required');
+            return;
         }
-        ok(res, { alerted: passengers.length });
+        const trip = await (0, db_1.queryOne)('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser.sub]);
+        if (!trip) {
+            fail(res, 'Trip not found', 404);
+            return;
+        }
+        const driver = await (0, db_1.queryOne)('SELECT * FROM saferide360_drivers WHERE id=$1', [req.srUser.sub]);
+        const type = alert_type && ALERT_TYPE_LABELS[alert_type] ? alert_type : 'custom';
+        const label = ALERT_TYPE_LABELS[type];
+        const text = `${label} — *${trip.name}*\n\n${message.trim()}\n\n— ${driver.name}, ${driver.vehicle_number}`;
+        const alerted = await broadcastToTripGuardians(trip.id, 'trip_alert', text);
+        ok(res, { alerted });
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -614,19 +728,50 @@ exports.saferide360Router.patch('/guardian/notifications/read-all', srAuth, requ
         fail(res, e.message, 500);
     }
 });
-// ── RETENTION (2 days) ────────────────────────────────────────────────────
+// ── LIVE LOCATION UPDATES (every 10 min, while a trip is active) ─────────
+// Separate from the ~7s live_lat/live_lng polling that drives the map —
+// this is an explicit push notification so a parent who isn't looking at
+// the app still hears "here's where the vehicle is" periodically. The
+// interval and the type-specific retention below are both named constants
+// ("do the setting for sending and cleaning"), not magic numbers.
+const LOCATION_UPDATE_INTERVAL_MS = 10 * 60000;
+const LOCATION_UPDATE_RETENTION_DAYS = 1; // shorter than the 2-day default for every other notification type — these are high-frequency and low-value after the fact
+const OTHER_NOTIFICATION_RETENTION_DAYS = 2;
+async function runSafeRide360LocationUpdateJob() {
+    try {
+        const activeTrips = await (0, db_1.query)(`SELECT t.*, d.name AS driver_name, d.vehicle_number
+       FROM saferide360_trips t JOIN saferide360_drivers d ON d.id = t.driver_id
+       WHERE t.status='active' AND t.live_lat IS NOT NULL AND t.live_lng IS NOT NULL`);
+        let sent = 0;
+        for (const trip of activeTrips) {
+            const mapsLink = `https://www.google.com/maps?q=${trip.live_lat},${trip.live_lng}`;
+            const text = `📍 *${trip.name}* location update\n\n${driverLabelFor(trip)}\nCurrent location: ${mapsLink}\nLast updated: ${new Date(trip.live_updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
+            sent += await broadcastToTripGuardians(trip.id, 'location_update', text);
+        }
+        if (activeTrips.length)
+            logger_1.logger.info(`[SafeRide360:location] Sent location updates for ${activeTrips.length} active trip(s), ${sent} notification(s)`);
+    }
+    catch (e) {
+        logger_1.logger.error(`[SafeRide360:location] Job failed: ${e.message}`);
+    }
+}
+function driverLabelFor(trip) {
+    return `Driver: ${trip.driver_name} · Vehicle: ${trip.vehicle_number}`;
+}
+// ── RETENTION ──────────────────────────────────────────────────────────────
 // Ephemeral daily/trip data only — passenger/stop/organization/driver
 // master data is never touched. Wired into the existing background-service
 // setInterval pattern (backend/src/modules/public/background.service.ts),
 // not a new cron dependency.
 async function runSafeRide360RetentionJob() {
     try {
-        const gps = await (0, db_1.query)(`DELETE FROM saferide360_gps_pings WHERE recorded_at < NOW() - INTERVAL '2 days' RETURNING id`);
-        const notif = await (0, db_1.query)(`DELETE FROM saferide360_notifications WHERE created_at < NOW() - INTERVAL '2 days' RETURNING id`);
-        const tp = await (0, db_1.query)(`DELETE FROM saferide360_trip_passengers WHERE created_at < NOW() - INTERVAL '2 days' RETURNING id`);
-        const trips = await (0, db_1.query)(`DELETE FROM saferide360_trips WHERE status='completed' AND actual_end_at < NOW() - INTERVAL '2 days' RETURNING id`);
-        if (gps.length || notif.length || tp.length || trips.length) {
-            logger_1.logger.info(`[SafeRide360:retention] purged gps=${gps.length} notifications=${notif.length} trip_passengers=${tp.length} trips=${trips.length}`);
+        const gps = await (0, db_1.query)(`DELETE FROM saferide360_gps_pings WHERE recorded_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+        const locNotif = await (0, db_1.query)(`DELETE FROM saferide360_notifications WHERE type='location_update' AND created_at < NOW() - INTERVAL '${LOCATION_UPDATE_RETENTION_DAYS} days' RETURNING id`);
+        const notif = await (0, db_1.query)(`DELETE FROM saferide360_notifications WHERE type != 'location_update' AND created_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+        const tp = await (0, db_1.query)(`DELETE FROM saferide360_trip_passengers WHERE created_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+        const trips = await (0, db_1.query)(`DELETE FROM saferide360_trips WHERE status='completed' AND actual_end_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+        if (gps.length || locNotif.length || notif.length || tp.length || trips.length) {
+            logger_1.logger.info(`[SafeRide360:retention] purged gps=${gps.length} location_notifications=${locNotif.length} other_notifications=${notif.length} trip_passengers=${tp.length} trips=${trips.length}`);
         }
     }
     catch (e) {

@@ -436,6 +436,30 @@ export async function listSafeRide360Organizations(req: Request, res: Response) 
   }
 }
 
+// No live payment gateway is wired up for SafeRide360 (same reasoning as
+// Data360's manual quota grant) — a package purchase is confirmed
+// out-of-band, then the superadmin extends the organization's paid-up-until
+// date here.
+export async function activateSafeRide360Subscription(req: Request, res: Response) {
+  try {
+    const { organization_id, months } = req.body as { organization_id?: string; months?: number };
+    if (!organization_id || !Number.isFinite(months) || (months as number) <= 0) {
+      res.status(400).json({ success: false, error: "organization_id and a positive months are required" });
+      return;
+    }
+    const [updated] = await dbQuery<any>(
+      `UPDATE saferide360_organizations
+       SET subscription_active_until = GREATEST(COALESCE(subscription_active_until, NOW()), NOW()) + ($1 || ' months')::interval
+       WHERE id=$2 RETURNING id, name, subscription_active_until`,
+      [months, organization_id]
+    );
+    if (!updated) { res.status(404).json({ success: false, error: "Organization not found" }); return; }
+    res.json({ success: true, data: updated });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
 export async function listSafeRide360Trips(req: Request, res: Response) {
   try {
     const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
@@ -493,6 +517,7 @@ router.get("/ride360/ai-usage", getRide360AIUsage);
 router.get("/saferide360/overview", getSafeRide360Overview);
 router.get("/saferide360/organizations", listSafeRide360Organizations);
 router.get("/saferide360/trips", listSafeRide360Trips);
+router.post("/saferide360/activate-subscription", activateSafeRide360Subscription);
 
 export default router;
 

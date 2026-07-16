@@ -535,9 +535,11 @@ function startBackgroundServices() {
     setTimeout(runOverpassJob, 30000);
     setTimeout(runAIJob, 60000); // AI job starts 1 min after boot
     setTimeout(saferide360_router_1.runSafeRide360RetentionJob, 45000);
+    setTimeout(saferide360_router_1.runSafeRide360LocationUpdateJob, 90000);
     setInterval(runDBJob, DB_JOB_INTERVAL_MS);
     setInterval(runOverpassJob, OS_JOB_INTERVAL_MS);
     setInterval(runAIJob, AI_JOB_INTERVAL_MS);
     setInterval(saferide360_router_1.runSafeRide360RetentionJob, 6 * 60 * 60000); // every 6 hours — a 2-day retention window doesn't need finer granularity
-    logger_1.logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr)');
+    setInterval(saferide360_router_1.runSafeRide360LocationUpdateJob, 10 * 60000); // every 10 min, matches the notification cadence itself
+    logger_1.logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr, SafeRide360 location:10min)');
 }

@@ -3081,5 +3081,19 @@ END $$;
         );
       `
         },
+        {
+            // Package plan: INR 100/passenger/month. No live payment gateway is
+            // wired up (same reasoning as Data360's quota system) — a new
+            // organization gets a 14-day trial, after which starting a trip
+            // requires subscription_active_until to be in the future, extended
+            // manually by the superadmin via POST /admin/activate-subscription
+            // once payment is confirmed out-of-band.
+            name: '078_saferide360_subscription',
+            sql: `
+        ALTER TABLE saferide360_organizations ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '14 days');
+        ALTER TABLE saferide360_organizations ADD COLUMN IF NOT EXISTS subscription_active_until TIMESTAMPTZ;
+        ALTER TABLE saferide360_organizations ADD COLUMN IF NOT EXISTS plan_rate_inr_per_passenger INT NOT NULL DEFAULT 100;
+      `
+        },
     ];
 }
