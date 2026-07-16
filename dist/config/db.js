@@ -3127,5 +3127,16 @@ END $$;
         ALTER TABLE saferide360_drivers ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
       `
         },
+        {
+            // Per-student school name (defaults to the org's own name, editable
+            // per student — e.g. a shared van serving kids from more than one
+            // school) — a real column, not just implicit via organization_id.
+            name: '080_saferide360_school_name',
+            sql: `
+        ALTER TABLE saferide360_passengers ADD COLUMN IF NOT EXISTS school_name VARCHAR(200);
+        UPDATE saferide360_passengers p SET school_name = o.name
+          FROM saferide360_organizations o WHERE p.organization_id = o.id AND p.school_name IS NULL;
+      `
+        },
     ];
 }

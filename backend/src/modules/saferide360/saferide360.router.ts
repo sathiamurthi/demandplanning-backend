@@ -82,6 +82,7 @@ function mapPassenger(row: any) {
     id: row.id, organizationId: row.organization_id, name: row.name,
     guardianName: row.guardian_name, guardianPhone: row.guardian_phone,
     pickupStopId: row.pickup_stop_id || undefined, dropStopId: row.drop_stop_id || undefined,
+    schoolName: row.school_name || undefined,
   };
 }
 function mapTrip(row: any) {
@@ -281,6 +282,29 @@ saferide360Router.post('/auth/guardian/verify-otp', async (req, res) => {
   }
 });
 
+// Phone-only guardian login — no OTP verification. Chosen deliberately: the
+// WhatsApp Cloud API sandbox restricts OTP delivery to pre-approved test
+// numbers (#131030 "Recipient phone number not in allowed list"), which
+// blocked real parents from ever getting a code. A guardian's "identity" on
+// this product is already just "the phone number on a passenger record" —
+// this trades phone-ownership verification for reliability, matching what
+// was explicitly requested.
+saferide360Router.post('/auth/guardian/login', async (req, res) => {
+  try {
+    const { phone } = req.body as { phone?: string };
+    if (!phone?.trim()) { fail(res, 'phone is required'); return; }
+    const normPhone = normalizeWhatsAppPhone(phone);
+
+    const linked = await queryOne<any>('SELECT 1 FROM saferide360_passengers WHERE guardian_phone=$1 LIMIT 1', [normPhone]);
+    if (!linked) { fail(res, 'This number is not linked to any child on SafeRide360 — ask your driver to add it.', 404); return; }
+
+    const token = jwt.sign({ sub: normPhone, role: 'guardian', scope: 'saferide360' }, JWT_SECRET, guardianSignOptions);
+    ok(res, { token, phone: normPhone });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ══════════════════════ STOPS ═══════════════════════════════════════════
 saferide360Router.get('/stops', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
@@ -333,6 +357,25 @@ saferide360Router.delete('/stops/:id', srAuth, requireDriver, async (req: SRReq,
   }
 });
 
+// ══════════════════════ GEOCODE (location search) ════════════════════════
+// Free, no-API-key location-suggestion search for the stop-name field, so a
+// driver doesn't have to type/know raw lat/lng. Proxied server-side (rather
+// than called directly from the browser) because Nominatim's usage policy
+// requires a real, identifying User-Agent and rate-limits per source.
+saferide360Router.get('/geocode/search', srAuth, requireDriver, async (req: SRReq, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) { ok(res, []); return; }
+    const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=0&limit=6&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'SafeRide360/1.0 (safety-transport-tracking)' } });
+    if (!r.ok) { fail(res, 'Location search is temporarily unavailable', 502); return; }
+    const results = await r.json() as any[];
+    ok(res, results.map(x => ({ label: x.display_name, lat: parseFloat(x.lat), lng: parseFloat(x.lon) })));
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ══════════════════════ PASSENGERS ═══════════════════════════════════════
 saferide360Router.get('/passengers', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
@@ -346,17 +389,24 @@ saferide360Router.get('/passengers', srAuth, requireDriver, async (req: SRReq, r
 
 saferide360Router.post('/passengers', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
-    const { name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id } = req.body as {
-      name?: string; guardian_name?: string; guardian_phone?: string; pickup_stop_id?: string; drop_stop_id?: string;
+    const { name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id, school_name } = req.body as {
+      name?: string; guardian_name?: string; guardian_phone?: string; pickup_stop_id?: string; drop_stop_id?: string; school_name?: string;
     };
     if (!name?.trim() || !guardian_name?.trim() || !guardian_phone?.trim()) {
       fail(res, 'name, guardian_name and guardian_phone are required'); return;
     }
     const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
+    // Defaults to the org's own name when not overridden — supports a
+    // shared van serving kids from more than one school.
+    let schoolName = school_name?.trim();
+    if (!schoolName) {
+      const org = await queryOne<any>('SELECT name FROM saferide360_organizations WHERE id=$1', [driver.organization_id]);
+      schoolName = org?.name;
+    }
     const [row] = await query<any>(
-      `INSERT INTO saferide360_passengers (organization_id, name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [driver.organization_id, name.trim(), guardian_name.trim(), normalizeWhatsAppPhone(guardian_phone), pickup_stop_id || null, drop_stop_id || null]
+      `INSERT INTO saferide360_passengers (organization_id, name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id, school_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [driver.organization_id, name.trim(), guardian_name.trim(), normalizeWhatsAppPhone(guardian_phone), pickup_stop_id || null, drop_stop_id || null, schoolName || null]
     );
     ok(res, mapPassenger(row), 201);
   } catch (e: any) {
@@ -366,16 +416,17 @@ saferide360Router.post('/passengers', srAuth, requireDriver, async (req: SRReq, 
 
 saferide360Router.patch('/passengers/:id', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
-    const { name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id } = req.body as {
-      name?: string; guardian_name?: string; guardian_phone?: string; pickup_stop_id?: string; drop_stop_id?: string;
+    const { name, guardian_name, guardian_phone, pickup_stop_id, drop_stop_id, school_name } = req.body as {
+      name?: string; guardian_name?: string; guardian_phone?: string; pickup_stop_id?: string; drop_stop_id?: string; school_name?: string;
     };
     const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
     const [row] = await query<any>(
       `UPDATE saferide360_passengers SET
          name=COALESCE($1,name), guardian_name=COALESCE($2,guardian_name),
-         guardian_phone=COALESCE($3,guardian_phone), pickup_stop_id=COALESCE($4,pickup_stop_id), drop_stop_id=COALESCE($5,drop_stop_id)
-       WHERE id=$6 AND organization_id=$7 RETURNING *`,
-      [name, guardian_name, guardian_phone ? normalizeWhatsAppPhone(guardian_phone) : null, pickup_stop_id, drop_stop_id, req.params.id, driver.organization_id]
+         guardian_phone=COALESCE($3,guardian_phone), pickup_stop_id=COALESCE($4,pickup_stop_id), drop_stop_id=COALESCE($5,drop_stop_id),
+         school_name=COALESCE($6,school_name)
+       WHERE id=$7 AND organization_id=$8 RETURNING *`,
+      [name, guardian_name, guardian_phone ? normalizeWhatsAppPhone(guardian_phone) : null, pickup_stop_id, drop_stop_id, school_name, req.params.id, driver.organization_id]
     );
     if (!row) { fail(res, 'Passenger not found', 404); return; }
     ok(res, mapPassenger(row));
@@ -466,9 +517,13 @@ saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req: SR
 
     const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
     const passengers = await query<any>(
-      `SELECT * FROM saferide360_passengers WHERE organization_id=$1 AND ${stopCol} IS NOT NULL`,
+      `SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL`,
       [trip.organization_id]
     );
+    if (passengers.length === 0) {
+      fail(res, `No students are assigned a ${trip.direction} stop yet — add students under Passengers before starting this trip.`);
+      return;
+    }
     for (const p of passengers) {
       await query(`INSERT INTO saferide360_trip_passengers (trip_id, passenger_id) VALUES ($1,$2)`, [trip.id, p.id]);
     }
@@ -514,12 +569,21 @@ saferide360Router.patch('/trips/:id/live', srAuth, requireDriver, async (req: SR
   }
 });
 
+// Ordered by the trip's relevant stop sequence (pickup order for a
+// 'pickup' trip, drop order for a 'drop' trip) so the driver sees students
+// in the order they'll actually be encountered along the route, not
+// alphabetically.
 saferide360Router.get('/trips/:id/passengers', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
+    const trip = await queryOne<any>('SELECT direction FROM saferide360_trips WHERE id=$1', [req.params.id]);
+    if (!trip) { fail(res, 'Trip not found', 404); return; }
+    const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
     const rows = await query<any>(
-      `SELECT tp.*, p.name AS passenger_name, p.guardian_phone
-       FROM saferide360_trip_passengers tp JOIN saferide360_passengers p ON p.id = tp.passenger_id
-       WHERE tp.trip_id=$1 ORDER BY p.name ASC`,
+      `SELECT tp.*, p.name AS passenger_name, p.guardian_phone, s.sequence AS stop_sequence
+       FROM saferide360_trip_passengers tp
+       JOIN saferide360_passengers p ON p.id = tp.passenger_id
+       LEFT JOIN saferide360_stops s ON s.id = p.${stopCol}
+       WHERE tp.trip_id=$1 ORDER BY s.sequence ASC NULLS LAST, p.name ASC`,
       [req.params.id]
     );
     ok(res, rows.map((r: any) => ({ ...mapTripPassenger(r), passengerName: r.passenger_name })));
@@ -555,10 +619,38 @@ saferide360Router.patch('/trip-passengers/:id', srAuth, requireDriver, async (re
   }
 });
 
+// Safety gate: any student never explicitly confirmed defaults to absent
+// (rather than staying ambiguously "pending"), then the driver must confirm
+// a headcount of students physically in the vehicle that matches the
+// confirmed/picked count before the trip can complete — catches a driver
+// who tapped "picked" for a student who then didn't actually board.
 saferide360Router.post('/trips/:id/complete', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
+    const { confirmed_in_vehicle } = req.body as { confirmed_in_vehicle?: number };
     const trip = await queryOne<any>('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser!.sub]);
     if (!trip) { fail(res, 'Trip not found', 404); return; }
+
+    await query(`UPDATE saferide360_trip_passengers SET status='absent' WHERE trip_id=$1 AND status='pending'`, [trip.id]);
+
+    const pickedCount = await queryOne<any>(
+      `SELECT COUNT(*)::int AS n FROM saferide360_trip_passengers WHERE trip_id=$1 AND status='picked'`,
+      [trip.id]
+    );
+
+    if (confirmed_in_vehicle == null) {
+      fail(res, `Confirm the number of students physically in the vehicle before completing this trip. ${pickedCount.n} student(s) are marked picked up.`, 400);
+      return;
+    }
+    if (confirmed_in_vehicle !== pickedCount.n) {
+      res.status(409).json({
+        success: false,
+        error: `Headcount mismatch — ${pickedCount.n} student(s) marked picked up in the app, but you confirmed ${confirmed_in_vehicle} in the vehicle. Recheck and update each student's status before completing.`,
+        code: 'HEADCOUNT_MISMATCH',
+        confirmedPicked: pickedCount.n, confirmedInVehicle: confirmed_in_vehicle,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
 
     const [updated] = await query<any>(
       `UPDATE saferide360_trips SET status='completed', actual_end_at=NOW() WHERE id=$1 RETURNING *`,
