@@ -2950,5 +2950,136 @@ END $$;
         ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS purchased_document_quota INT NOT NULL DEFAULT 0;
       `
         },
+        {
+            // SafeRide360 — child-safety-first transport tracking, first vertical
+            // is school pickup/drop but every entity uses generic nouns
+            // (organization/passenger/guardian/stop, not school/student/parent/
+            // pickup-point) so a second vertical (corporate shuttle, hospital
+            // transport, elder care) can reuse this schema untouched later — the
+            // brand and the UI copy stay vertical-specific, only the data model is
+            // generic. Own JWT scope 'saferide360', fully isolated from the
+            // existing ride360_* tables (different product: driver-marketplace
+            // ride-sharing vs. fixed-route transport tracking).
+            name: '077_saferide360',
+            sql: `
+        CREATE TABLE IF NOT EXISTS saferide360_organizations (
+          id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          name        VARCHAR(200) NOT NULL,
+          org_type    VARCHAR(30)  NOT NULL DEFAULT 'school',
+          created_at  TIMESTAMPTZ  DEFAULT NOW(),
+          UNIQUE(name, org_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS saferide360_drivers (
+          id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id  UUID         REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          name             VARCHAR(200) NOT NULL,
+          phone            VARCHAR(20)  UNIQUE NOT NULL,
+          password_hash    TEXT         NOT NULL,
+          vehicle_number   VARCHAR(30)  NOT NULL DEFAULT '',
+          vehicle_type     VARCHAR(30)  NOT NULL DEFAULT 'van',
+          last_login_at    TIMESTAMPTZ,
+          created_at       TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_drivers_org ON saferide360_drivers(organization_id);
+
+        CREATE TABLE IF NOT EXISTS saferide360_stops (
+          id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id  UUID         REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          name             VARCHAR(200) NOT NULL,
+          lat              NUMERIC(9,6) NOT NULL,
+          lng              NUMERIC(9,6) NOT NULL,
+          sequence         INT          NOT NULL DEFAULT 0,
+          created_at       TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_stops_org ON saferide360_stops(organization_id);
+
+        CREATE TABLE IF NOT EXISTS saferide360_passengers (
+          id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id  UUID         REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          name             VARCHAR(200) NOT NULL,
+          guardian_name    VARCHAR(200) NOT NULL,
+          guardian_phone   VARCHAR(20)  NOT NULL,
+          pickup_stop_id   UUID         REFERENCES saferide360_stops(id) ON DELETE SET NULL,
+          drop_stop_id     UUID         REFERENCES saferide360_stops(id) ON DELETE SET NULL,
+          created_at       TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_passengers_org ON saferide360_passengers(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_saferide360_passengers_guardian ON saferide360_passengers(guardian_phone);
+
+        -- "Parent does not create an account manually" — a guardian's
+        -- identity IS the set of passengers whose guardian_phone matches
+        -- their OTP-verified number; there's no separate guardians table.
+        CREATE TABLE IF NOT EXISTS saferide360_trips (
+          id                    UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id       UUID         REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          driver_id             UUID         REFERENCES saferide360_drivers(id) ON DELETE CASCADE,
+          name                  VARCHAR(200) NOT NULL,
+          direction             VARCHAR(10)  NOT NULL DEFAULT 'pickup',
+          scheduled_start_time  TIME         NOT NULL,
+          scheduled_end_time    TIME         NOT NULL,
+          status                VARCHAR(20)  NOT NULL DEFAULT 'scheduled',
+          actual_start_at       TIMESTAMPTZ,
+          actual_end_at         TIMESTAMPTZ,
+          live_lat              NUMERIC(9,6),
+          live_lng              NUMERIC(9,6),
+          live_updated_at       TIMESTAMPTZ,
+          created_at            TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_trips_org ON saferide360_trips(organization_id);
+        CREATE INDEX IF NOT EXISTS idx_saferide360_trips_driver ON saferide360_trips(driver_id);
+        CREATE INDEX IF NOT EXISTS idx_saferide360_trips_status ON saferide360_trips(status);
+
+        -- Daily status (per-run), separate from the permanent passenger
+        -- master row, matching the 2-day-retention design — one row created
+        -- per passenger when a trip starts.
+        CREATE TABLE IF NOT EXISTS saferide360_trip_passengers (
+          id            UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          trip_id       UUID         REFERENCES saferide360_trips(id) ON DELETE CASCADE,
+          passenger_id  UUID         REFERENCES saferide360_passengers(id) ON DELETE CASCADE,
+          status        VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          picked_at     TIMESTAMPTZ,
+          created_at    TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_tp_trip ON saferide360_trip_passengers(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_saferide360_tp_passenger ON saferide360_trip_passengers(passenger_id);
+
+        -- Location history (route trail + retention target) — separate from
+        -- trips.live_lat/live_lng, which is just the fast-read current
+        -- position for polling.
+        CREATE TABLE IF NOT EXISTS saferide360_gps_pings (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          trip_id      UUID         REFERENCES saferide360_trips(id) ON DELETE CASCADE,
+          lat          NUMERIC(9,6) NOT NULL,
+          lng          NUMERIC(9,6) NOT NULL,
+          recorded_at  TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_gps_trip ON saferide360_gps_pings(trip_id, recorded_at);
+
+        CREATE TABLE IF NOT EXISTS saferide360_notifications (
+          id              UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          guardian_phone  VARCHAR(20)  NOT NULL,
+          trip_id         UUID         REFERENCES saferide360_trips(id) ON DELETE SET NULL,
+          passenger_id    UUID         REFERENCES saferide360_passengers(id) ON DELETE SET NULL,
+          type            VARCHAR(30)  NOT NULL,
+          text            TEXT         NOT NULL,
+          read            BOOLEAN      NOT NULL DEFAULT FALSE,
+          created_at      TIMESTAMPTZ  DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_saferide360_notif_guardian ON saferide360_notifications(guardian_phone, created_at DESC);
+
+        -- Isolated OTP table (not the generic otp_verifications, which has a
+        -- CHECK(type IN ('whatsapp','email')) that doesn't fit a scoped
+        -- guardian-login identifier) — same rate-limit/expiry shape.
+        CREATE TABLE IF NOT EXISTS saferide360_otp (
+          id           UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+          phone        VARCHAR(20)  UNIQUE NOT NULL,
+          otp_code     VARCHAR(10)  NOT NULL,
+          expires_at   TIMESTAMPTZ  NOT NULL,
+          verified_at  TIMESTAMPTZ,
+          created_at   TIMESTAMPTZ  DEFAULT NOW()
+        );
+      `
+        },
     ];
 }

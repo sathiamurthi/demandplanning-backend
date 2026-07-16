@@ -89,6 +89,7 @@ const notify_settings_service_1 = require("./modules/workflow/notify-settings.se
 const college360_router_1 = require("./modules/college360/college360.router");
 const data360_router_1 = require("./modules/data360/data360.router");
 const ride360_router_1 = require("./modules/ride360/ride360.router");
+const saferide360_router_1 = require("./modules/saferide360/saferide360.router");
 // ── Create app ───────────────────────────────────────────────
 exports.app = (0, express_1.default)();
 // ── Security middleware ──────────────────────────────────────
@@ -177,6 +178,7 @@ exports.app.use('/v1/public/notify-settings', notify_settings_service_1.notifySe
 exports.app.use('/v1/c360', college360_router_1.c360Router);
 exports.app.use('/v1/data360', data360_router_1.data360Router);
 exports.app.use('/v1/ride360', ride360_router_1.ride360Router);
+exports.app.use('/v1/saferide360', saferide360_router_1.saferide360Router);
 exports.app.use('/v1/auth', auth_service_1.authRouter);
 exports.app.use('/v1/units', units_service_1.unitsRouter);
 exports.app.use('/v1/industries', industry_service_1.industryRouter);

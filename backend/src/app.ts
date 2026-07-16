@@ -57,6 +57,7 @@ import { notifySettingsRouter } from './modules/workflow/notify-settings.service
 import { c360Router } from './modules/college360/college360.router';
 import { data360Router } from './modules/data360/data360.router';
 import { ride360Router } from './modules/ride360/ride360.router';
+import { saferide360Router } from './modules/saferide360/saferide360.router';
 
 // ── Create app ───────────────────────────────────────────────
 export const app = express();
@@ -150,6 +151,7 @@ app.use('/v1/public/notify-settings', notifySettingsRouter);
 app.use('/v1/c360',       c360Router);
 app.use('/v1/data360',    data360Router);
 app.use('/v1/ride360',    ride360Router);
+app.use('/v1/saferide360', saferide360Router);
 app.use('/v1/auth',       authRouter);
 app.use('/v1/units',      unitsRouter);
 app.use('/v1/industries', industryRouter);

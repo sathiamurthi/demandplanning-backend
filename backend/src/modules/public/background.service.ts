@@ -15,6 +15,7 @@ import { query as dbQuery, queryOne } from '../../config/db';
 import { logger } from '../../config/logger';
 import Anthropic from '@anthropic-ai/sdk';
 import { callGemini } from '../auth/gemini.service';
+import { runSafeRide360RetentionJob } from '../saferide360/saferide360.router';
 
 // ── Constants ─────────────────────────────────────────────────
 const ACTIVE_WINDOW_MIN  = 15;
@@ -583,11 +584,13 @@ export function startBackgroundServices() {
   setTimeout(runDBJob,      10_000);
   setTimeout(runOverpassJob, 30_000);
   setTimeout(runAIJob,       60_000); // AI job starts 1 min after boot
+  setTimeout(runSafeRide360RetentionJob, 45_000);
 
   setInterval(runDBJob,       DB_JOB_INTERVAL_MS);
   setInterval(runOverpassJob, OS_JOB_INTERVAL_MS);
   setInterval(runAIJob,       AI_JOB_INTERVAL_MS);
+  setInterval(runSafeRide360RetentionJob, 6 * 60 * 60_000); // every 6 hours — a 2-day retention window doesn't need finer granularity
 
-  logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min)');
+  logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr)');
 }
 
