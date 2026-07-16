@@ -161,6 +161,7 @@ saferide360Router.post('/auth/driver/login', async (req, res) => {
     if (!driver) { fail(res, 'Invalid phone or password', 401); return; }
     const valid = await bcrypt.compare(password, driver.password_hash);
     if (!valid) { fail(res, 'Invalid phone or password', 401); return; }
+    if (driver.is_active === false) { fail(res, 'This account has been suspended — contact support.', 403); return; }
     await query('UPDATE saferide360_drivers SET last_login_at=NOW() WHERE id=$1', [driver.id]);
     const token = jwt.sign({ sub: driver.id, role: 'driver', scope: 'saferide360' }, JWT_SECRET, driverSignOptions);
     const org = await queryOne<any>('SELECT * FROM saferide360_organizations WHERE id=$1', [driver.organization_id]);

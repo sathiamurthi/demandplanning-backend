@@ -1,7 +1,9 @@
 import { Request, Response, Router } from "express";
 import { queryBus } from "../../cqrs/queryBus";
 import { commandBus } from "../../cqrs/commandBus";
-import { query as dbQuery } from "../../config/db";
+import { query as dbQuery, queryOne as dbQueryOne } from "../../config/db";
+import { sendMail } from "../../utils/email";
+import { sendWhatsAppText } from "../../utils/whatsapp";
 import {
   getAIUsageSummary,
   getPipelineRuns,
@@ -333,10 +335,10 @@ export async function listRide360Users(req: Request, res: Response) {
   try {
     const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
     const rows = await dbQuery<any>(
-      `SELECT id, name, email, phone, 'driver' AS type, vehicle_type, subscription_plan, created_at, last_login_at
+      `SELECT id, name, email, phone, 'driver' AS type, vehicle_type, subscription_plan, created_at, last_login_at, is_active
        FROM ride360_drivers
        UNION ALL
-       SELECT id, NULL AS name, NULL AS email, phone, 'customer' AS type, NULL AS vehicle_type, subscription_plan, created_at, last_login_at
+       SELECT id, NULL AS name, NULL AS email, phone, 'customer' AS type, NULL AS vehicle_type, subscription_plan, created_at, last_login_at, is_active
        FROM ride360_customers
        ORDER BY created_at DESC LIMIT $1`,
       [limit]
@@ -477,6 +479,127 @@ export async function listSafeRide360Trips(req: Request, res: Response) {
   }
 }
 
+export async function listSafeRide360Drivers(req: Request, res: Response) {
+  try {
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
+    const rows = await dbQuery<any>(
+      `SELECT d.*, o.name AS organization_name
+       FROM saferide360_drivers d JOIN saferide360_organizations o ON o.id = d.organization_id
+       ORDER BY d.created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function listData360Users(req: Request, res: Response) {
+  try {
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
+    const rows = await dbQuery<any>(
+      `SELECT id, name, email, role, is_active, purchased_document_quota, created_at
+       FROM data360_users ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function listCollege360Users(req: Request, res: Response) {
+  try {
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
+    const rows = await dbQuery<any>(
+      `SELECT id, name, email, phone, role, college, premium, is_active, created_at
+       FROM c360_users ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// ── ACCOUNT SUSPENSION + PAYMENT REMINDERS (all apps except the main
+// enterprise/tenant store, which already has its own tenant approve/
+// deactivate flow above) ────────────────────────────────────────────────
+// Same shape as the existing explore_guests deactivate/reactivate pattern
+// (is_active / deactivated_at / deactivated_by), applied per app's own
+// account table. One factory per table since every app's table/columns
+// differ, but the logic is identical.
+interface AccountTableConfig {
+  table: string;
+  nameCol: string | null; // column to show in the reminder greeting, or null to use a generic greeting
+  phoneCol: string | null;
+  emailCol: string | null;
+}
+
+function makeSuspendReactivate(cfg: AccountTableConfig) {
+  const suspend = async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const deactivatedBy = (req as any).user?.email || "superadmin";
+      const rows = await dbQuery<any>(
+        `UPDATE ${cfg.table} SET is_active = FALSE, deactivated_at = NOW(), deactivated_by = $2 WHERE id = $1 RETURNING id`,
+        [id, deactivatedBy]
+      );
+      if (!rows.length) { res.status(404).json({ success: false, error: "Account not found" }); return; }
+      res.json({ success: true, data: { suspended: true } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  };
+  const reactivate = async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const rows = await dbQuery<any>(
+        `UPDATE ${cfg.table} SET is_active = TRUE, deactivated_at = NULL, deactivated_by = NULL WHERE id = $1 RETURNING id`,
+        [id]
+      );
+      if (!rows.length) { res.status(404).json({ success: false, error: "Account not found" }); return; }
+      res.json({ success: true, data: { reactivated: true } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  };
+  const sendReminder = async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { message } = req.body as { message?: string };
+      const cols = ["id", cfg.nameCol, cfg.phoneCol, cfg.emailCol].filter(Boolean).join(", ");
+      const account = await dbQueryOne<any>(`SELECT ${cols} FROM ${cfg.table} WHERE id=$1`, [id]);
+      if (!account) { res.status(404).json({ success: false, error: "Account not found" }); return; }
+
+      const name = cfg.nameCol ? account[cfg.nameCol] : null;
+      const greeting = name ? `Hi ${name},` : "Hi,";
+      const body = message?.trim() || "This is a reminder that payment is due on your account. Please renew to avoid any interruption in service.";
+      const text = `${greeting}\n\n${body}\n\n— DemandGeniusAI`;
+
+      let channel: "whatsapp" | "email" | null = null;
+      if (cfg.phoneCol && account[cfg.phoneCol]) {
+        await sendWhatsAppText(account[cfg.phoneCol], text);
+        channel = "whatsapp";
+      } else if (cfg.emailCol && account[cfg.emailCol]) {
+        await sendMail({ to: account[cfg.emailCol], subject: "Payment Reminder — DemandGeniusAI", html: `<p>${text.replace(/\n/g, "<br/>")}</p>` });
+        channel = "email";
+      }
+      if (!channel) { res.status(400).json({ success: false, error: "This account has no phone or email on file to send a reminder to" }); return; }
+      res.json({ success: true, data: { sent: true, channel } });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  };
+  return { suspend, reactivate, sendReminder };
+}
+
+const data360Accounts = makeSuspendReactivate({ table: "data360_users", nameCol: "name", phoneCol: null, emailCol: "email" });
+const ride360Drivers = makeSuspendReactivate({ table: "ride360_drivers", nameCol: "name", phoneCol: "phone", emailCol: "email" });
+const ride360Customers = makeSuspendReactivate({ table: "ride360_customers", nameCol: null, phoneCol: "phone", emailCol: null });
+const saferide360Drivers = makeSuspendReactivate({ table: "saferide360_drivers", nameCol: "name", phoneCol: "phone", emailCol: null });
+const college360Accounts = makeSuspendReactivate({ table: "c360_users", nameCol: "name", phoneCol: "phone", emailCol: "email" });
+
 // Router setup
 const router = Router();
 
@@ -517,7 +640,32 @@ router.get("/ride360/ai-usage", getRide360AIUsage);
 router.get("/saferide360/overview", getSafeRide360Overview);
 router.get("/saferide360/organizations", listSafeRide360Organizations);
 router.get("/saferide360/trips", listSafeRide360Trips);
+router.get("/saferide360/drivers", listSafeRide360Drivers);
+router.get("/data360/users", listData360Users);
+router.get("/college360/users", listCollege360Users);
 router.post("/saferide360/activate-subscription", activateSafeRide360Subscription);
+
+// Account suspension + payment reminders — every app except the main
+// enterprise/tenant store (tenants have their own approve/deactivate flow
+// above).
+router.post("/data360/users/:id/suspend", data360Accounts.suspend);
+router.post("/data360/users/:id/reactivate", data360Accounts.reactivate);
+router.post("/data360/users/:id/send-reminder", data360Accounts.sendReminder);
+
+router.post("/ride360/drivers/:id/suspend", ride360Drivers.suspend);
+router.post("/ride360/drivers/:id/reactivate", ride360Drivers.reactivate);
+router.post("/ride360/drivers/:id/send-reminder", ride360Drivers.sendReminder);
+router.post("/ride360/customers/:id/suspend", ride360Customers.suspend);
+router.post("/ride360/customers/:id/reactivate", ride360Customers.reactivate);
+router.post("/ride360/customers/:id/send-reminder", ride360Customers.sendReminder);
+
+router.post("/saferide360/drivers/:id/suspend", saferide360Drivers.suspend);
+router.post("/saferide360/drivers/:id/reactivate", saferide360Drivers.reactivate);
+router.post("/saferide360/drivers/:id/send-reminder", saferide360Drivers.sendReminder);
+
+router.post("/college360/users/:id/suspend", college360Accounts.suspend);
+router.post("/college360/users/:id/reactivate", college360Accounts.reactivate);
+router.post("/college360/users/:id/send-reminder", college360Accounts.sendReminder);
 
 export default router;
 

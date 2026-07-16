@@ -199,6 +199,10 @@ exports.ride360Router.post('/auth/driver/login', async (req, res) => {
             fail(res, 'Incorrect password', 401);
             return;
         }
+        if (row.is_active === false) {
+            fail(res, 'This account has been suspended — contact support.', 403);
+            return;
+        }
         await (0, db_1.query)('UPDATE ride360_drivers SET last_login_at=NOW() WHERE id=$1', [row.id]);
         const token = makeToken(row.id, 'driver');
         ok(res, { token, user: mapDriver(row) });
@@ -220,6 +224,10 @@ exports.ride360Router.post('/auth/driver/social', async (req, res) => {
             await recordInviteIfAny(referredBy, { type: 'driver', id: row.id, name: row.name });
         }
         else {
+            if (row.is_active === false) {
+                fail(res, 'This account has been suspended — contact support.', 403);
+                return;
+            }
             await (0, db_1.query)('UPDATE ride360_drivers SET last_login_at=NOW() WHERE id=$1', [row.id]);
         }
         const token = makeToken(row.id, 'driver');
@@ -303,6 +311,10 @@ exports.ride360Router.post('/auth/customer/login', async (req, res) => {
             await recordInviteIfAny(referredBy, { type: 'customer', id: row.id, name: row.phone });
         }
         else {
+            if (row.is_active === false) {
+                fail(res, 'This account has been suspended — contact support.', 403);
+                return;
+            }
             await (0, db_1.query)('UPDATE ride360_customers SET last_login_at=NOW() WHERE id=$1', [row.id]);
         }
         const token = makeToken(row.id, 'customer');

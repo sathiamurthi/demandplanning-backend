@@ -164,6 +164,7 @@ ride360Router.post('/auth/driver/login', async (req, res) => {
     if (!row || !row.password_hash) { fail(res, 'No account found with that email', 404); return; }
     const validPw = await bcrypt.compare(password, row.password_hash);
     if (!validPw) { fail(res, 'Incorrect password', 401); return; }
+    if (row.is_active === false) { fail(res, 'This account has been suspended — contact support.', 403); return; }
     await query('UPDATE ride360_drivers SET last_login_at=NOW() WHERE id=$1', [row.id]);
     const token = makeToken(row.id, 'driver');
     ok(res, { token, user: mapDriver(row) });
@@ -182,6 +183,7 @@ ride360Router.post('/auth/driver/social', async (req, res) => {
       );
       await recordInviteIfAny(referredBy, { type: 'driver', id: row.id, name: row.name });
     } else {
+      if (row.is_active === false) { fail(res, 'This account has been suspended — contact support.', 403); return; }
       await query('UPDATE ride360_drivers SET last_login_at=NOW() WHERE id=$1', [row.id]);
     }
     const token = makeToken(row.id, 'driver');
@@ -226,6 +228,7 @@ ride360Router.post('/auth/customer/login', async (req, res) => {
       [row] = await query<any>(`INSERT INTO ride360_customers (phone, last_login_at) VALUES ($1,NOW()) RETURNING *`, [phone.trim()]);
       await recordInviteIfAny(referredBy, { type: 'customer', id: row.id, name: row.phone });
     } else {
+      if (row.is_active === false) { fail(res, 'This account has been suspended — contact support.', 403); return; }
       await query('UPDATE ride360_customers SET last_login_at=NOW() WHERE id=$1', [row.id]);
     }
     const token = makeToken(row.id, 'customer');

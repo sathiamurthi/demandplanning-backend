@@ -25,12 +25,17 @@ exports.getSafeRide360Overview = getSafeRide360Overview;
 exports.listSafeRide360Organizations = listSafeRide360Organizations;
 exports.activateSafeRide360Subscription = activateSafeRide360Subscription;
 exports.listSafeRide360Trips = listSafeRide360Trips;
+exports.listSafeRide360Drivers = listSafeRide360Drivers;
+exports.listData360Users = listData360Users;
+exports.listCollege360Users = listCollege360Users;
 exports.getPlatformConfig = getPlatformConfig;
 exports.setPlatformConfig = setPlatformConfig;
 const express_1 = require("express");
 const queryBus_1 = require("../../cqrs/queryBus");
 const commandBus_1 = require("../../cqrs/commandBus");
 const db_1 = require("../../config/db");
+const email_1 = require("../../utils/email");
+const whatsapp_1 = require("../../utils/whatsapp");
 const ai_pipeline_service_1 = require("./ai-pipeline.service");
 // Controller functions
 async function getTenants(req, res) {
@@ -311,10 +316,10 @@ async function getRide360Overview(_req, res) {
 async function listRide360Users(req, res) {
     try {
         const limit = Math.min(200, parseInt(req.query.limit || "100"));
-        const rows = await (0, db_1.query)(`SELECT id, name, email, phone, 'driver' AS type, vehicle_type, subscription_plan, created_at, last_login_at
+        const rows = await (0, db_1.query)(`SELECT id, name, email, phone, 'driver' AS type, vehicle_type, subscription_plan, created_at, last_login_at, is_active
        FROM ride360_drivers
        UNION ALL
-       SELECT id, NULL AS name, NULL AS email, phone, 'customer' AS type, NULL AS vehicle_type, subscription_plan, created_at, last_login_at
+       SELECT id, NULL AS name, NULL AS email, phone, 'customer' AS type, NULL AS vehicle_type, subscription_plan, created_at, last_login_at, is_active
        FROM ride360_customers
        ORDER BY created_at DESC LIMIT $1`, [limit]);
         res.json({ success: true, data: rows });
@@ -432,6 +437,110 @@ async function listSafeRide360Trips(req, res) {
         res.status(500).json({ success: false, error: e.message });
     }
 }
+async function listSafeRide360Drivers(req, res) {
+    try {
+        const limit = Math.min(200, parseInt(req.query.limit || "100"));
+        const rows = await (0, db_1.query)(`SELECT d.*, o.name AS organization_name
+       FROM saferide360_drivers d JOIN saferide360_organizations o ON o.id = d.organization_id
+       ORDER BY d.created_at DESC LIMIT $1`, [limit]);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function listData360Users(req, res) {
+    try {
+        const limit = Math.min(200, parseInt(req.query.limit || "100"));
+        const rows = await (0, db_1.query)(`SELECT id, name, email, role, is_active, purchased_document_quota, created_at
+       FROM data360_users ORDER BY created_at DESC LIMIT $1`, [limit]);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function listCollege360Users(req, res) {
+    try {
+        const limit = Math.min(200, parseInt(req.query.limit || "100"));
+        const rows = await (0, db_1.query)(`SELECT id, name, email, phone, role, college, premium, is_active, created_at
+       FROM c360_users ORDER BY created_at DESC LIMIT $1`, [limit]);
+        res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+function makeSuspendReactivate(cfg) {
+    const suspend = async (req, res) => {
+        try {
+            const { id } = req.params;
+            const deactivatedBy = req.user?.email || "superadmin";
+            const rows = await (0, db_1.query)(`UPDATE ${cfg.table} SET is_active = FALSE, deactivated_at = NOW(), deactivated_by = $2 WHERE id = $1 RETURNING id`, [id, deactivatedBy]);
+            if (!rows.length) {
+                res.status(404).json({ success: false, error: "Account not found" });
+                return;
+            }
+            res.json({ success: true, data: { suspended: true } });
+        }
+        catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    };
+    const reactivate = async (req, res) => {
+        try {
+            const { id } = req.params;
+            const rows = await (0, db_1.query)(`UPDATE ${cfg.table} SET is_active = TRUE, deactivated_at = NULL, deactivated_by = NULL WHERE id = $1 RETURNING id`, [id]);
+            if (!rows.length) {
+                res.status(404).json({ success: false, error: "Account not found" });
+                return;
+            }
+            res.json({ success: true, data: { reactivated: true } });
+        }
+        catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    };
+    const sendReminder = async (req, res) => {
+        try {
+            const { id } = req.params;
+            const { message } = req.body;
+            const cols = ["id", cfg.nameCol, cfg.phoneCol, cfg.emailCol].filter(Boolean).join(", ");
+            const account = await (0, db_1.queryOne)(`SELECT ${cols} FROM ${cfg.table} WHERE id=$1`, [id]);
+            if (!account) {
+                res.status(404).json({ success: false, error: "Account not found" });
+                return;
+            }
+            const name = cfg.nameCol ? account[cfg.nameCol] : null;
+            const greeting = name ? `Hi ${name},` : "Hi,";
+            const body = message?.trim() || "This is a reminder that payment is due on your account. Please renew to avoid any interruption in service.";
+            const text = `${greeting}\n\n${body}\n\n— DemandGeniusAI`;
+            let channel = null;
+            if (cfg.phoneCol && account[cfg.phoneCol]) {
+                await (0, whatsapp_1.sendWhatsAppText)(account[cfg.phoneCol], text);
+                channel = "whatsapp";
+            }
+            else if (cfg.emailCol && account[cfg.emailCol]) {
+                await (0, email_1.sendMail)({ to: account[cfg.emailCol], subject: "Payment Reminder — DemandGeniusAI", html: `<p>${text.replace(/\n/g, "<br/>")}</p>` });
+                channel = "email";
+            }
+            if (!channel) {
+                res.status(400).json({ success: false, error: "This account has no phone or email on file to send a reminder to" });
+                return;
+            }
+            res.json({ success: true, data: { sent: true, channel } });
+        }
+        catch (e) {
+            res.status(500).json({ success: false, error: e.message });
+        }
+    };
+    return { suspend, reactivate, sendReminder };
+}
+const data360Accounts = makeSuspendReactivate({ table: "data360_users", nameCol: "name", phoneCol: null, emailCol: "email" });
+const ride360Drivers = makeSuspendReactivate({ table: "ride360_drivers", nameCol: "name", phoneCol: "phone", emailCol: "email" });
+const ride360Customers = makeSuspendReactivate({ table: "ride360_customers", nameCol: null, phoneCol: "phone", emailCol: null });
+const saferide360Drivers = makeSuspendReactivate({ table: "saferide360_drivers", nameCol: "name", phoneCol: "phone", emailCol: null });
+const college360Accounts = makeSuspendReactivate({ table: "c360_users", nameCol: "name", phoneCol: "phone", emailCol: "email" });
 // Router setup
 const router = (0, express_1.Router)();
 router.get("/tenants", getTenants);
@@ -463,7 +572,28 @@ router.get("/ride360/ai-usage", getRide360AIUsage);
 router.get("/saferide360/overview", getSafeRide360Overview);
 router.get("/saferide360/organizations", listSafeRide360Organizations);
 router.get("/saferide360/trips", listSafeRide360Trips);
+router.get("/saferide360/drivers", listSafeRide360Drivers);
+router.get("/data360/users", listData360Users);
+router.get("/college360/users", listCollege360Users);
 router.post("/saferide360/activate-subscription", activateSafeRide360Subscription);
+// Account suspension + payment reminders — every app except the main
+// enterprise/tenant store (tenants have their own approve/deactivate flow
+// above).
+router.post("/data360/users/:id/suspend", data360Accounts.suspend);
+router.post("/data360/users/:id/reactivate", data360Accounts.reactivate);
+router.post("/data360/users/:id/send-reminder", data360Accounts.sendReminder);
+router.post("/ride360/drivers/:id/suspend", ride360Drivers.suspend);
+router.post("/ride360/drivers/:id/reactivate", ride360Drivers.reactivate);
+router.post("/ride360/drivers/:id/send-reminder", ride360Drivers.sendReminder);
+router.post("/ride360/customers/:id/suspend", ride360Customers.suspend);
+router.post("/ride360/customers/:id/reactivate", ride360Customers.reactivate);
+router.post("/ride360/customers/:id/send-reminder", ride360Customers.sendReminder);
+router.post("/saferide360/drivers/:id/suspend", saferide360Drivers.suspend);
+router.post("/saferide360/drivers/:id/reactivate", saferide360Drivers.reactivate);
+router.post("/saferide360/drivers/:id/send-reminder", saferide360Drivers.sendReminder);
+router.post("/college360/users/:id/suspend", college360Accounts.suspend);
+router.post("/college360/users/:id/reactivate", college360Accounts.reactivate);
+router.post("/college360/users/:id/send-reminder", college360Accounts.sendReminder);
 exports.default = router;
 // ── Platform Config CRUD ────────────────────────────────────────────────────
 async function getPlatformConfig(_req, res) {

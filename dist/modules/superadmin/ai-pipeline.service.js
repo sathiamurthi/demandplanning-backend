@@ -147,11 +147,12 @@ async function callClaude(prompt, agentName, pipelineRunId, tenantId, fallback) 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function agentDataCollector(storeId) {
     const [items, recentForecasts] = await Promise.all([
-        (0, db_1.query)(`SELECT id, name, sku, category, unit_price,
-              current_stock, reorder_point, reorder_qty, is_active
-       FROM items
-       WHERE store_id = $1 AND is_active = TRUE
-       ORDER BY name LIMIT 60`, [storeId]),
+        (0, db_1.query)(`SELECT i.id, i.name, i.sku, c.name AS category, i.selling_price AS unit_price,
+              i.current_stock, i.reorder_level AS reorder_point, i.is_active
+       FROM items i
+       LEFT JOIN categories c ON c.id = i.category_id
+       WHERE i.store_id = $1 AND i.is_active = TRUE
+       ORDER BY i.name LIMIT 60`, [storeId]),
         (0, db_1.query)(`SELECT item_id, predicted_qty_30d, confidence_pct, order_needed,
               order_qty, risk_level, created_at::text
        FROM ai_forecasts

@@ -164,11 +164,12 @@ async function callClaude(
 async function agentDataCollector(storeId: string) {
   const [items, recentForecasts] = await Promise.all([
     dbQuery<any>(
-      `SELECT id, name, sku, category, unit_price,
-              current_stock, reorder_point, reorder_qty, is_active
-       FROM items
-       WHERE store_id = $1 AND is_active = TRUE
-       ORDER BY name LIMIT 60`,
+      `SELECT i.id, i.name, i.sku, c.name AS category, i.selling_price AS unit_price,
+              i.current_stock, i.reorder_level AS reorder_point, i.is_active
+       FROM items i
+       LEFT JOIN categories c ON c.id = i.category_id
+       WHERE i.store_id = $1 AND i.is_active = TRUE
+       ORDER BY i.name LIMIT 60`,
       [storeId]
     ),
     dbQuery<any>(

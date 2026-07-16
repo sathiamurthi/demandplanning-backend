@@ -3130,5 +3130,37 @@ END $$;
         ALTER TABLE saferide360_organizations ADD COLUMN IF NOT EXISTS plan_rate_inr_per_passenger INT NOT NULL DEFAULT 100;
       `
     },
+    {
+      // Superadmin account-suspension + payment-reminder control, applied
+      // uniformly across every product app EXCEPT the main enterprise/
+      // tenant store (which already has its own tenant approve/deactivate
+      // flow at /v1/superadmin/tenants). Same shape as the existing
+      // explore_guests deactivate pattern (is_active/deactivated_at/
+      // deactivated_by), replicated wherever it doesn't already exist.
+      // Data360 (data360_users) and College360 (c360_users) already have
+      // is_active enforced at login — this just adds the audit columns and
+      // brings Ride360/SafeRide360 driver+customer accounts up to the same
+      // capability, since neither had any suspend mechanism before.
+      name: '079_cross_app_account_suspension',
+      sql: `
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
+
+        ALTER TABLE c360_users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+        ALTER TABLE c360_users ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
+
+        ALTER TABLE ride360_drivers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE ride360_drivers ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+        ALTER TABLE ride360_drivers ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
+
+        ALTER TABLE ride360_customers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE ride360_customers ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+        ALTER TABLE ride360_customers ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
+
+        ALTER TABLE saferide360_drivers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE saferide360_drivers ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+        ALTER TABLE saferide360_drivers ADD COLUMN IF NOT EXISTS deactivated_by VARCHAR(200);
+      `
+    },
   ];
 }
