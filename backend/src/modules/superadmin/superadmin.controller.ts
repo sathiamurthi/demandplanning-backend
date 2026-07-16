@@ -372,6 +372,87 @@ export async function getRide360AIUsage(req: Request, res: Response) {
   }
 }
 
+// ── SafeRide360 Analytics ─────────────────────────────────────
+// Independent product from Ride360 (child-safety transport tracking vs.
+// driver-marketplace ride-sharing) — separate tables, same reporting shape.
+
+export async function getSafeRide360Overview(_req: Request, res: Response) {
+  try {
+    const [
+      [orgsTotal], [driversTotal], [passengersTotal], [stopsTotal],
+      [driversNew7d], [driversActive24h],
+      [tripsTotal], [tripsActive], [tripsCompleted7d],
+      [tpStats],
+      [sosCount],
+    ] = await Promise.all([
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_organizations`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_drivers`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_passengers`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_stops`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_drivers WHERE created_at >= NOW() - INTERVAL '7 days'`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_drivers WHERE last_login_at >= NOW() - INTERVAL '24 hours'`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_trips`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_trips WHERE status='active'`),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_trips WHERE status='completed' AND actual_end_at >= NOW() - INTERVAL '7 days'`),
+      dbQuery<any>(
+        `SELECT COUNT(*) FILTER (WHERE status='picked')::int AS picked,
+                COUNT(*) FILTER (WHERE status='absent')::int AS absent,
+                COUNT(*) FILTER (WHERE status='pending')::int AS pending
+         FROM saferide360_trip_passengers WHERE created_at >= NOW() - INTERVAL '7 days'`
+      ),
+      dbQuery<any>(`SELECT COUNT(*)::int AS n FROM saferide360_notifications WHERE type='sos' AND created_at >= NOW() - INTERVAL '7 days'`),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        organizations: orgsTotal.n,
+        drivers: { total: driversTotal.n, new7d: driversNew7d.n, active24h: driversActive24h.n },
+        passengers: passengersTotal.n,
+        stops: stopsTotal.n,
+        trips: { total: tripsTotal.n, active: tripsActive.n, completed7d: tripsCompleted7d.n },
+        pickups7d: { picked: tpStats.picked, absent: tpStats.absent, pending: tpStats.pending },
+        sos7d: sosCount.n,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function listSafeRide360Organizations(req: Request, res: Response) {
+  try {
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
+    const rows = await dbQuery<any>(
+      `SELECT o.*,
+              (SELECT COUNT(*)::int FROM saferide360_drivers d WHERE d.organization_id=o.id) AS driver_count,
+              (SELECT COUNT(*)::int FROM saferide360_passengers p WHERE p.organization_id=o.id) AS passenger_count
+       FROM saferide360_organizations o ORDER BY o.created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function listSafeRide360Trips(req: Request, res: Response) {
+  try {
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
+    const rows = await dbQuery<any>(
+      `SELECT t.*, d.name AS driver_name, d.vehicle_number, o.name AS organization_name
+       FROM saferide360_trips t
+       JOIN saferide360_drivers d ON d.id = t.driver_id
+       JOIN saferide360_organizations o ON o.id = t.organization_id
+       ORDER BY t.created_at DESC LIMIT $1`,
+      [limit]
+    );
+    res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
 // Router setup
 const router = Router();
 
@@ -407,6 +488,11 @@ router.get("/ride360/overview", getRide360Overview);
 router.get("/ride360/users", listRide360Users);
 router.get("/ride360/invites", listRide360Invites);
 router.get("/ride360/ai-usage", getRide360AIUsage);
+
+// SafeRide360 analytics
+router.get("/saferide360/overview", getSafeRide360Overview);
+router.get("/saferide360/organizations", listSafeRide360Organizations);
+router.get("/saferide360/trips", listSafeRide360Trips);
 
 export default router;
 

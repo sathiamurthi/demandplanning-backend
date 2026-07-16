@@ -486,7 +486,7 @@ exports.saferide360Router.patch('/trip-passengers/:id', srAuth, requireDriver, a
             fail(res, "status must be 'picked' or 'absent'");
             return;
         }
-        const [row] = await (0, db_1.query)(`UPDATE saferide360_trip_passengers SET status=$1, picked_at=CASE WHEN $1='picked' THEN NOW() ELSE picked_at END WHERE id=$2 RETURNING *`, [status, req.params.id]);
+        const [row] = await (0, db_1.query)(`UPDATE saferide360_trip_passengers SET status=$1, picked_at=CASE WHEN $1::VARCHAR='picked' THEN NOW() ELSE picked_at END WHERE id=$2 RETURNING *`, [status, req.params.id]);
         if (!row) {
             fail(res, 'Trip passenger not found', 404);
             return;
