@@ -697,7 +697,7 @@ saferide360Router.get('/trips/:id/roster-preview', srAuth, requireDriver, async 
 // as the existing complete-trip headcount check.
 saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
-    const { confirmed_students } = req.body as { confirmed_students?: number };
+    const { confirmed_students, passenger_ids } = req.body as { confirmed_students?: number; passenger_ids?: string[] };
     const trip = await queryOne<any>('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser!.sub]);
     if (!trip) { fail(res, 'Trip not found', 404); return; }
     if (trip.status === 'active') { fail(res, 'Trip is already active'); return; }
@@ -716,23 +716,33 @@ saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req: SR
       return;
     }
 
-    const { passengers, absentTodayKinds } = await resolveTripRoster(trip);
+    let { passengers, absentTodayKinds } = await resolveTripRoster(trip);
+    // The driver can narrow today's roster right on the Start screen (e.g.
+    // deselect a student, or the roster picked up someone new who was just
+    // onboarded and isn't riding yet) — passenger_ids is always a SUBSET of
+    // the live-resolved roster above, never a way to add someone outside
+    // their configured stop/template.
+    if (Array.isArray(passenger_ids)) {
+      const allowed = new Set(passenger_ids);
+      passengers = passengers.filter((p: any) => allowed.has(p.id));
+    }
     if (passengers.length === 0) {
       fail(res, `No students are assigned a ${trip.direction} stop yet — add students under Passengers before starting this trip.`);
       return;
     }
 
-    const expectedCount = passengers.length - absentTodayKinds.size;
+    const absentInSelection = passengers.filter((p: any) => absentTodayKinds.has(p.id)).length;
+    const expectedCount = passengers.length - absentInSelection;
     if (confirmed_students == null) {
-      fail(res, `Confirm the number of students for this trip before starting. Expected ${expectedCount} (${passengers.length} total, ${absentTodayKinds.size} absent today).`, 400);
+      fail(res, `Confirm the number of students for this trip before starting. Expected ${expectedCount} (${passengers.length} total, ${absentInSelection} absent today).`, 400);
       return;
     }
     if (confirmed_students !== expectedCount) {
       res.status(409).json({
         success: false,
-        error: `Student count mismatch — expected ${expectedCount} (${passengers.length} total minus ${absentTodayKinds.size} absent today), but you confirmed ${confirmed_students}. Recheck attendance before starting.`,
+        error: `Student count mismatch — expected ${expectedCount} (${passengers.length} total minus ${absentInSelection} absent today), but you confirmed ${confirmed_students}. Recheck attendance before starting.`,
         code: 'STUDENT_COUNT_MISMATCH',
-        expectedCount, totalCount: passengers.length, absentCount: absentTodayKinds.size, confirmedStudents: confirmed_students,
+        expectedCount, totalCount: passengers.length, absentCount: absentInSelection, confirmedStudents: confirmed_students,
         timestamp: new Date().toISOString(),
       });
       return;
