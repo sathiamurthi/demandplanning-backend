@@ -881,8 +881,23 @@ saferide360Router.patch('/guardian/notifications/read-all', srAuth, requireGuard
 // interval and the type-specific retention below are both named constants
 // ("do the setting for sending and cleaning"), not magic numbers.
 const LOCATION_UPDATE_INTERVAL_MS = 10 * 60_000;
-const LOCATION_UPDATE_RETENTION_DAYS = 1; // shorter than the 2-day default for every other notification type — these are high-frequency and low-value after the fact
-const OTHER_NOTIFICATION_RETENTION_DAYS = 2;
+const LOCATION_UPDATE_RETENTION_DAYS = 1; // shorter than the guardian-notification default — these are high-frequency and low-value after the fact
+const TRIP_DATA_RETENTION_DAYS = 2; // ephemeral GPS pings / trip_passengers / completed trips — distinct from the guardian-facing notification list below
+const DEFAULT_GUARDIAN_NOTIFICATION_RETENTION_DAYS = 5;
+
+// Superadmin-configurable via PUT /v1/superadmin/platform-config with
+// { key: "saferide360", value: { notificationRetentionDays } } — same
+// generic platform_config table/pattern already used by College360's
+// config tab, so "keep last 5 days" is a setting, not a hardcoded number.
+async function getGuardianNotificationRetentionDays(): Promise<number> {
+  try {
+    const row = await queryOne<any>(`SELECT value FROM platform_config WHERE key='saferide360'`);
+    const days = row?.value?.notificationRetentionDays;
+    return typeof days === 'number' && days > 0 ? days : DEFAULT_GUARDIAN_NOTIFICATION_RETENTION_DAYS;
+  } catch {
+    return DEFAULT_GUARDIAN_NOTIFICATION_RETENTION_DAYS;
+  }
+}
 
 export async function runSafeRide360LocationUpdateJob() {
   try {
@@ -913,13 +928,14 @@ function driverLabelFor(trip: any): string {
 // not a new cron dependency.
 export async function runSafeRide360RetentionJob() {
   try {
-    const gps = await query<any>(`DELETE FROM saferide360_gps_pings WHERE recorded_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+    const notifRetentionDays = await getGuardianNotificationRetentionDays();
+    const gps = await query<any>(`DELETE FROM saferide360_gps_pings WHERE recorded_at < NOW() - INTERVAL '${TRIP_DATA_RETENTION_DAYS} days' RETURNING id`);
     const locNotif = await query<any>(`DELETE FROM saferide360_notifications WHERE type='location_update' AND created_at < NOW() - INTERVAL '${LOCATION_UPDATE_RETENTION_DAYS} days' RETURNING id`);
-    const notif = await query<any>(`DELETE FROM saferide360_notifications WHERE type != 'location_update' AND created_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
-    const tp = await query<any>(`DELETE FROM saferide360_trip_passengers WHERE created_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
-    const trips = await query<any>(`DELETE FROM saferide360_trips WHERE status='completed' AND actual_end_at < NOW() - INTERVAL '${OTHER_NOTIFICATION_RETENTION_DAYS} days' RETURNING id`);
+    const notif = await query<any>(`DELETE FROM saferide360_notifications WHERE type != 'location_update' AND created_at < NOW() - INTERVAL '${notifRetentionDays} days' RETURNING id`);
+    const tp = await query<any>(`DELETE FROM saferide360_trip_passengers WHERE created_at < NOW() - INTERVAL '${TRIP_DATA_RETENTION_DAYS} days' RETURNING id`);
+    const trips = await query<any>(`DELETE FROM saferide360_trips WHERE status='completed' AND actual_end_at < NOW() - INTERVAL '${TRIP_DATA_RETENTION_DAYS} days' RETURNING id`);
     if (gps.length || locNotif.length || notif.length || tp.length || trips.length) {
-      logger.info(`[SafeRide360:retention] purged gps=${gps.length} location_notifications=${locNotif.length} other_notifications=${notif.length} trip_passengers=${tp.length} trips=${trips.length}`);
+      logger.info(`[SafeRide360:retention] purged gps=${gps.length} location_notifications=${locNotif.length} other_notifications=${notif.length} (retention=${notifRetentionDays}d) trip_passengers=${tp.length} trips=${trips.length}`);
     }
   } catch (e: any) {
     logger.error(`[SafeRide360:retention] Job failed: ${e.message}`);
