@@ -717,14 +717,26 @@ saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req: SR
     }
 
     let { passengers, absentTodayKinds } = await resolveTripRoster(trip);
-    // The driver can narrow today's roster right on the Start screen (e.g.
-    // deselect a student, or the roster picked up someone new who was just
-    // onboarded and isn't riding yet) — passenger_ids is always a SUBSET of
-    // the live-resolved roster above, never a way to add someone outside
-    // their configured stop/template.
+    // The driver can edit today's roster right on the Start screen — not
+    // just deselect a no-show, but add a student who isn't in the
+    // auto-resolved list (outside the trip's template, or without this
+    // direction's stop configured yet). When passenger_ids is provided
+    // it's authoritative: re-fetch exactly those passengers, scoped to
+    // this org so a driver can never pull in another organization's kids.
     if (Array.isArray(passenger_ids)) {
-      const allowed = new Set(passenger_ids);
-      passengers = passengers.filter((p: any) => allowed.has(p.id));
+      const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
+      passengers = passenger_ids.length ? await query<any>(
+        `SELECT p.*, s.name AS stop_name, s.lat AS stop_lat, s.lng AS stop_lng
+         FROM saferide360_passengers p LEFT JOIN saferide360_stops s ON s.id = p.${stopCol}
+         WHERE p.organization_id=$1 AND p.id = ANY($2::uuid[])`,
+        [trip.organization_id, passenger_ids]
+      ) : [];
+      const today = new Date().toISOString().slice(0, 10);
+      const absentRows = passengers.length ? await query<any>(
+        `SELECT passenger_id, kind FROM saferide360_passenger_absences WHERE absence_date=$1 AND passenger_id = ANY($2::uuid[])`,
+        [today, passengers.map((p: any) => p.id)]
+      ) : [];
+      absentTodayKinds = new Map(absentRows.map((r: any) => [r.passenger_id, r.kind || 'absent']));
     }
     if (passengers.length === 0) {
       fail(res, `No students are assigned a ${trip.direction} stop yet — add students under Passengers before starting this trip.`);
