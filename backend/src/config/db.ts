@@ -3173,5 +3173,26 @@ END $$;
           FROM saferide360_organizations o WHERE p.organization_id = o.id AND p.school_name IS NULL;
       `
     },
+    {
+      // "Configure trip by selecting students and save as template" — a
+      // named, reusable roster (e.g. "Morning Van A route") a driver picks
+      // when creating a trip instead of re-selecting students every day.
+      // passenger_ids is a JSONB array of saferide360_passengers.id; trips
+      // gain a nullable template_id so /trips/:id/start can scope its
+      // roster to the template instead of "every org passenger with this
+      // direction's stop set" (preserved as the fallback when no template
+      // is attached, so existing trips keep working unchanged).
+      name: '081_saferide360_trip_templates',
+      sql: `
+        CREATE TABLE IF NOT EXISTS saferide360_trip_templates (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id UUID NOT NULL REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          passenger_ids JSONB NOT NULL DEFAULT '[]',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        ALTER TABLE saferide360_trips ADD COLUMN IF NOT EXISTS template_id UUID REFERENCES saferide360_trip_templates(id) ON DELETE SET NULL;
+      `
+    },
   ];
 }

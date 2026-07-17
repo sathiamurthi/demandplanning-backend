@@ -93,7 +93,11 @@ function mapTrip(row: any) {
     liveLat: row.live_lat != null ? Number(row.live_lat) : undefined,
     liveLng: row.live_lng != null ? Number(row.live_lng) : undefined,
     liveUpdatedAt: row.live_updated_at || undefined,
+    templateId: row.template_id || undefined,
   };
+}
+function mapTripTemplate(row: any) {
+  return { id: row.id, organizationId: row.organization_id, name: row.name, passengerIds: row.passenger_ids || [], createdAt: row.created_at };
 }
 function mapTripPassenger(row: any) {
   return { id: row.id, tripId: row.trip_id, passengerId: row.passenger_id, status: row.status, pickedAt: row.picked_at || undefined };
@@ -445,6 +449,64 @@ saferide360Router.delete('/passengers/:id', srAuth, requireDriver, async (req: S
   }
 });
 
+// ══════════════════════ TRIP TEMPLATES ════════════════════════════════════
+// "Configure trip by selecting students and save as a template" — a named,
+// reusable student roster a driver picks when creating a trip instead of
+// re-selecting the same students every day. Editable in place (PATCH
+// replaces the passenger list), not just create/delete.
+saferide360Router.get('/trip-templates', srAuth, requireDriver, async (req: SRReq, res) => {
+  try {
+    const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
+    const rows = await query<any>('SELECT * FROM saferide360_trip_templates WHERE organization_id=$1 ORDER BY created_at DESC', [driver.organization_id]);
+    ok(res, rows.map(mapTripTemplate));
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+saferide360Router.post('/trip-templates', srAuth, requireDriver, async (req: SRReq, res) => {
+  try {
+    const { name, passenger_ids } = req.body as { name?: string; passenger_ids?: string[] };
+    if (!name?.trim() || !Array.isArray(passenger_ids) || passenger_ids.length === 0) {
+      fail(res, 'name and at least one passenger are required'); return;
+    }
+    const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
+    const [row] = await query<any>(
+      `INSERT INTO saferide360_trip_templates (organization_id, name, passenger_ids) VALUES ($1,$2,$3) RETURNING *`,
+      [driver.organization_id, name.trim(), JSON.stringify(passenger_ids)]
+    );
+    ok(res, mapTripTemplate(row), 201);
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+saferide360Router.patch('/trip-templates/:id', srAuth, requireDriver, async (req: SRReq, res) => {
+  try {
+    const { name, passenger_ids } = req.body as { name?: string; passenger_ids?: string[] };
+    const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
+    const [row] = await query<any>(
+      `UPDATE saferide360_trip_templates SET name=COALESCE($1,name), passenger_ids=COALESCE($2,passenger_ids)
+       WHERE id=$3 AND organization_id=$4 RETURNING *`,
+      [name, passenger_ids ? JSON.stringify(passenger_ids) : null, req.params.id, driver.organization_id]
+    );
+    if (!row) { fail(res, 'Template not found', 404); return; }
+    ok(res, mapTripTemplate(row));
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
+saferide360Router.delete('/trip-templates/:id', srAuth, requireDriver, async (req: SRReq, res) => {
+  try {
+    const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
+    await query('DELETE FROM saferide360_trip_templates WHERE id=$1 AND organization_id=$2', [req.params.id, driver.organization_id]);
+    ok(res, { deleted: true });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ══════════════════════ TRIPS ═════════════════════════════════════════════
 saferide360Router.get('/trips', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
@@ -457,17 +519,17 @@ saferide360Router.get('/trips', srAuth, requireDriver, async (req: SRReq, res) =
 
 saferide360Router.post('/trips', srAuth, requireDriver, async (req: SRReq, res) => {
   try {
-    const { name, direction, scheduled_start_time, scheduled_end_time } = req.body as {
-      name?: string; direction?: 'pickup' | 'drop'; scheduled_start_time?: string; scheduled_end_time?: string;
+    const { name, direction, scheduled_start_time, scheduled_end_time, template_id } = req.body as {
+      name?: string; direction?: 'pickup' | 'drop'; scheduled_start_time?: string; scheduled_end_time?: string; template_id?: string;
     };
     if (!name?.trim() || !scheduled_start_time || !scheduled_end_time) {
       fail(res, 'name, scheduled_start_time and scheduled_end_time are required'); return;
     }
     const driver = await queryOne<any>('SELECT organization_id FROM saferide360_drivers WHERE id=$1', [req.srUser!.sub]);
     const [row] = await query<any>(
-      `INSERT INTO saferide360_trips (organization_id, driver_id, name, direction, scheduled_start_time, scheduled_end_time)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-      [driver.organization_id, req.srUser!.sub, name.trim(), direction || 'pickup', scheduled_start_time, scheduled_end_time]
+      `INSERT INTO saferide360_trips (organization_id, driver_id, name, direction, scheduled_start_time, scheduled_end_time, template_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [driver.organization_id, req.srUser!.sub, name.trim(), direction || 'pickup', scheduled_start_time, scheduled_end_time, template_id || null]
     );
     ok(res, mapTrip(row), 201);
   } catch (e: any) {
@@ -516,10 +578,23 @@ saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req: SR
     }
 
     const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
-    const passengers = await query<any>(
-      `SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL`,
-      [trip.organization_id]
-    );
+    // A template scopes the roster to a saved student selection (e.g. "Van A
+    // route"); without one, every org passenger with this direction's stop
+    // set rides — the original, still-supported default behavior.
+    let passengers: any[];
+    if (trip.template_id) {
+      const template = await queryOne<any>('SELECT * FROM saferide360_trip_templates WHERE id=$1', [trip.template_id]);
+      const ids: string[] = template?.passenger_ids || [];
+      passengers = ids.length === 0 ? [] : await query<any>(
+        `SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL AND p.id = ANY($2::uuid[])`,
+        [trip.organization_id, ids]
+      );
+    } else {
+      passengers = await query<any>(
+        `SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL`,
+        [trip.organization_id]
+      );
+    }
     if (passengers.length === 0) {
       fail(res, `No students are assigned a ${trip.direction} stop yet — add students under Passengers before starting this trip.`);
       return;
