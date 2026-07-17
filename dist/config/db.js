@@ -3177,5 +3177,38 @@ END $$;
         );
       `
         },
+        {
+            // Distinguishes "not attending today" from "parent is handling
+            // pickup/drop themselves today" — same effect on the roster (driver
+            // doesn't wait), but the driver sees a different reason for routing
+            // (a self-arranged kid means genuinely skip that stop; a plain
+            // absence is just "nobody's there"). trip_passengers gets its own
+            // copy of the kind at seed time since it's a point-in-time snapshot,
+            // not a live join to the absences table.
+            name: '083_saferide360_absence_kind',
+            sql: `
+        ALTER TABLE saferide360_passenger_absences ADD COLUMN IF NOT EXISTS kind VARCHAR(20) NOT NULL DEFAULT 'absent';
+        ALTER TABLE saferide360_trip_passengers ADD COLUMN IF NOT EXISTS absence_kind VARCHAR(20);
+      `
+        },
+        {
+            // "Driver can add another driver and vehicle details in case
+            // different from the current registered vehicle" — a lightweight
+            // directory of substitutes an org's driver can name (and later pick
+            // from) when sending an advance unavailability notice, rather than
+            // typing the same substitute's contact info from scratch every time.
+            name: '084_saferide360_substitute_drivers',
+            sql: `
+        CREATE TABLE IF NOT EXISTS saferide360_substitute_drivers (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          organization_id UUID NOT NULL REFERENCES saferide360_organizations(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          phone VARCHAR(20) NOT NULL,
+          vehicle_number VARCHAR(20),
+          vehicle_type VARCHAR(20),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `
+        },
     ];
 }
