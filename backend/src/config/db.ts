@@ -3194,5 +3194,23 @@ END $$;
         ALTER TABLE saferide360_trips ADD COLUMN IF NOT EXISTS template_id UUID REFERENCES saferide360_trip_templates(id) ON DELETE SET NULL;
       `
     },
+    {
+      // "Parents able to mark absent for the student on the day" — a guardian
+      // marks their child absent before the driver starts the trip, so the
+      // driver never waits on/chases a child who isn't coming. One row per
+      // passenger per calendar date; /trips/:id/start checks this and seeds
+      // that passenger as already-absent instead of pending, whether the
+      // trip pulls from a template or the full org roster.
+      name: '082_saferide360_passenger_absences',
+      sql: `
+        CREATE TABLE IF NOT EXISTS saferide360_passenger_absences (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          passenger_id UUID NOT NULL REFERENCES saferide360_passengers(id) ON DELETE CASCADE,
+          absence_date DATE NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE(passenger_id, absence_date)
+        );
+      `
+    },
   ];
 }

@@ -596,11 +596,59 @@ exports.saferide360Router.patch('/trips/:id', srAuth, requireDriver, async (req,
         fail(res, e.message, 500);
     }
 });
-// Seeds today's trip_passengers from every passenger whose relevant stop
-// (pickup for a 'pickup' trip, drop for a 'drop' trip) belongs to this
-// organization — one row per passenger, fresh each time a trip starts
-// (matches the 2-day-retention design: this is ephemeral daily state, not
-// master data).
+// Shared by /trips/:id/start (seeds trip_passengers) and
+// /trips/:id/roster-preview (shows the driver who'll be on the trip BEFORE
+// they tap Start) — one source of truth for "which students, which stop,
+// who's already marked absent today" so the two can't drift apart.
+async function resolveTripRoster(trip) {
+    const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
+    // A template scopes the roster to a saved student selection (e.g. "Van A
+    // route"); without one, every org passenger with this direction's stop
+    // set rides — the original, still-supported default behavior.
+    let passengers;
+    if (trip.template_id) {
+        const template = await (0, db_1.queryOne)('SELECT * FROM saferide360_trip_templates WHERE id=$1', [trip.template_id]);
+        const ids = template?.passenger_ids || [];
+        passengers = ids.length === 0 ? [] : await (0, db_1.query)(`SELECT p.*, s.name AS stop_name, s.lat AS stop_lat, s.lng AS stop_lng, s.sequence AS stop_sequence
+       FROM saferide360_passengers p JOIN saferide360_stops s ON s.id = p.${stopCol}
+       WHERE p.organization_id=$1 AND p.id = ANY($2::uuid[]) ORDER BY s.sequence ASC`, [trip.organization_id, ids]);
+    }
+    else {
+        passengers = await (0, db_1.query)(`SELECT p.*, s.name AS stop_name, s.lat AS stop_lat, s.lng AS stop_lng, s.sequence AS stop_sequence
+       FROM saferide360_passengers p JOIN saferide360_stops s ON s.id = p.${stopCol}
+       WHERE p.organization_id=$1 ORDER BY s.sequence ASC`, [trip.organization_id]);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const absentRows = passengers.length ? await (0, db_1.query)(`SELECT passenger_id FROM saferide360_passenger_absences WHERE absence_date=$1 AND passenger_id = ANY($2::uuid[])`, [today, passengers.map((p) => p.id)]) : [];
+    const absentTodayIds = new Set(absentRows.map((r) => r.passenger_id));
+    return { passengers, absentTodayIds };
+}
+// Lets the driver see exactly who's on this trip's roster — and who's
+// already marked absent by their parent for today — BEFORE tapping Start,
+// so there's no waiting on/chasing a student who was never coming today.
+exports.saferide360Router.get('/trips/:id/roster-preview', srAuth, requireDriver, async (req, res) => {
+    try {
+        const trip = await (0, db_1.queryOne)('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser.sub]);
+        if (!trip) {
+            fail(res, 'Trip not found', 404);
+            return;
+        }
+        const { passengers, absentTodayIds } = await resolveTripRoster(trip);
+        ok(res, passengers.map((p) => ({
+            passengerId: p.id, name: p.name, schoolName: p.school_name || undefined,
+            stopName: p.stop_name, stopLat: Number(p.stop_lat), stopLng: Number(p.stop_lng),
+            absentToday: absentTodayIds.has(p.id),
+        })));
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// Seeds today's trip_passengers from the resolved roster — one row per
+// passenger, fresh each time a trip starts (matches the 2-day-retention
+// design: this is ephemeral daily state, not master data). Anyone marked
+// absent-today by their parent is seeded straight into 'absent', not
+// 'pending' — the driver never has to act on them.
 exports.saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async (req, res) => {
     try {
         const trip = await (0, db_1.queryOne)('SELECT * FROM saferide360_trips WHERE id=$1 AND driver_id=$2', [req.params.id, req.srUser.sub]);
@@ -625,29 +673,20 @@ exports.saferide360Router.post('/trips/:id/start', srAuth, requireDriver, async 
             });
             return;
         }
-        const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
-        // A template scopes the roster to a saved student selection (e.g. "Van A
-        // route"); without one, every org passenger with this direction's stop
-        // set rides — the original, still-supported default behavior.
-        let passengers;
-        if (trip.template_id) {
-            const template = await (0, db_1.queryOne)('SELECT * FROM saferide360_trip_templates WHERE id=$1', [trip.template_id]);
-            const ids = template?.passenger_ids || [];
-            passengers = ids.length === 0 ? [] : await (0, db_1.query)(`SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL AND p.id = ANY($2::uuid[])`, [trip.organization_id, ids]);
-        }
-        else {
-            passengers = await (0, db_1.query)(`SELECT p.* FROM saferide360_passengers p WHERE p.organization_id=$1 AND p.${stopCol} IS NOT NULL`, [trip.organization_id]);
-        }
+        const { passengers, absentTodayIds } = await resolveTripRoster(trip);
         if (passengers.length === 0) {
             fail(res, `No students are assigned a ${trip.direction} stop yet — add students under Passengers before starting this trip.`);
             return;
         }
         for (const p of passengers) {
-            await (0, db_1.query)(`INSERT INTO saferide360_trip_passengers (trip_id, passenger_id) VALUES ($1,$2)`, [trip.id, p.id]);
+            const status = absentTodayIds.has(p.id) ? 'absent' : 'pending';
+            await (0, db_1.query)(`INSERT INTO saferide360_trip_passengers (trip_id, passenger_id, status) VALUES ($1,$2,$3)`, [trip.id, p.id, status]);
         }
         const [updated] = await (0, db_1.query)(`UPDATE saferide360_trips SET status='active', actual_start_at=NOW() WHERE id=$1 RETURNING *`, [trip.id]);
         const driver = await (0, db_1.queryOne)('SELECT * FROM saferide360_drivers WHERE id=$1', [req.srUser.sub]);
         for (const p of passengers) {
+            if (absentTodayIds.has(p.id))
+                continue; // parent already knows their own child isn't riding today
             await pushGuardianNotif(p.guardian_phone, 'trip_started', `🚐 *${trip.name}* has started.\n\nDriver: ${driver.name}\nVehicle: ${driver.vehicle_number}\n\nTrack live in SafeRide360.`, trip.id, p.id);
         }
         ok(res, mapTrip(updated));
@@ -691,12 +730,18 @@ exports.saferide360Router.get('/trips/:id/passengers', srAuth, requireDriver, as
             return;
         }
         const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
-        const rows = await (0, db_1.query)(`SELECT tp.*, p.name AS passenger_name, p.guardian_phone, s.sequence AS stop_sequence
+        const rows = await (0, db_1.query)(`SELECT tp.*, p.name AS passenger_name, p.guardian_phone,
+              s.name AS stop_name, s.lat AS stop_lat, s.lng AS stop_lng, s.sequence AS stop_sequence
        FROM saferide360_trip_passengers tp
        JOIN saferide360_passengers p ON p.id = tp.passenger_id
        LEFT JOIN saferide360_stops s ON s.id = p.${stopCol}
        WHERE tp.trip_id=$1 ORDER BY s.sequence ASC NULLS LAST, p.name ASC`, [req.params.id]);
-        ok(res, rows.map((r) => ({ ...mapTripPassenger(r), passengerName: r.passenger_name })));
+        ok(res, rows.map((r) => ({
+            ...mapTripPassenger(r), passengerName: r.passenger_name,
+            stopName: r.stop_name || undefined,
+            stopLat: r.stop_lat != null ? Number(r.stop_lat) : undefined,
+            stopLng: r.stop_lng != null ? Number(r.stop_lng) : undefined,
+        })));
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -838,7 +883,46 @@ exports.saferide360Router.post('/trips/:id/alert', srAuth, requireDriver, async 
 exports.saferide360Router.get('/guardian/children', srAuth, requireGuardian, async (req, res) => {
     try {
         const rows = await (0, db_1.query)('SELECT * FROM saferide360_passengers WHERE guardian_phone=$1', [req.srUser.sub]);
-        ok(res, rows.map(mapPassenger));
+        const today = new Date().toISOString().slice(0, 10);
+        const ids = rows.map((r) => r.id);
+        const absentRows = ids.length ? await (0, db_1.query)(`SELECT passenger_id FROM saferide360_passenger_absences WHERE absence_date=$1 AND passenger_id = ANY($2::uuid[])`, [today, ids]) : [];
+        const absentSet = new Set(absentRows.map((r) => r.passenger_id));
+        ok(res, rows.map((r) => ({ ...mapPassenger(r), absentToday: absentSet.has(r.id) })));
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+// "Parents able to mark absent for the student on the day" — a guardian
+// marks their own child absent for today; /trips/:id/start checks this and
+// seeds that student straight into 'absent' instead of 'pending', so the
+// driver never waits on/chases a kid who was never coming. Idempotent
+// (ON CONFLICT DO NOTHING / plain DELETE) since a parent might tap it twice.
+exports.saferide360Router.post('/guardian/passengers/:id/absent-today', srAuth, requireGuardian, async (req, res) => {
+    try {
+        const passenger = await (0, db_1.queryOne)('SELECT id FROM saferide360_passengers WHERE id=$1 AND guardian_phone=$2', [req.params.id, req.srUser.sub]);
+        if (!passenger) {
+            fail(res, 'Student not found', 404);
+            return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        await (0, db_1.query)(`INSERT INTO saferide360_passenger_absences (passenger_id, absence_date) VALUES ($1,$2) ON CONFLICT (passenger_id, absence_date) DO NOTHING`, [passenger.id, today]);
+        ok(res, { absentToday: true });
+    }
+    catch (e) {
+        fail(res, e.message, 500);
+    }
+});
+exports.saferide360Router.delete('/guardian/passengers/:id/absent-today', srAuth, requireGuardian, async (req, res) => {
+    try {
+        const passenger = await (0, db_1.queryOne)('SELECT id FROM saferide360_passengers WHERE id=$1 AND guardian_phone=$2', [req.params.id, req.srUser.sub]);
+        if (!passenger) {
+            fail(res, 'Student not found', 404);
+            return;
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        await (0, db_1.query)(`DELETE FROM saferide360_passenger_absences WHERE passenger_id=$1 AND absence_date=$2`, [passenger.id, today]);
+        ok(res, { absentToday: false });
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -870,6 +954,10 @@ exports.saferide360Router.get('/guardian/today', srAuth, requireGuardian, async 
         fail(res, e.message, 500);
     }
 });
+// Every stop for this trip's direction, each carrying the names of the
+// students (on THIS trip's roster) riding through it — lets a parent see
+// not just "where," but "whose stop is whose" on the map, for both their
+// own child and the rest of the route.
 exports.saferide360Router.get('/guardian/trips/:id/stops', srAuth, requireGuardian, async (req, res) => {
     try {
         const trip = await (0, db_1.queryOne)('SELECT * FROM saferide360_trips WHERE id=$1', [req.params.id]);
@@ -877,8 +965,15 @@ exports.saferide360Router.get('/guardian/trips/:id/stops', srAuth, requireGuardi
             fail(res, 'Trip not found', 404);
             return;
         }
-        const stops = await (0, db_1.query)('SELECT * FROM saferide360_stops WHERE organization_id=$1 ORDER BY sequence ASC', [trip.organization_id]);
-        ok(res, stops.map(mapStop));
+        const stopCol = trip.direction === 'drop' ? 'drop_stop_id' : 'pickup_stop_id';
+        const stops = await (0, db_1.query)(`SELECT s.*, COALESCE(json_agg(p.name) FILTER (WHERE p.id IS NOT NULL), '[]') AS student_names
+       FROM saferide360_stops s
+       LEFT JOIN saferide360_passengers p ON p.${stopCol} = s.id
+         AND p.id IN (SELECT passenger_id FROM saferide360_trip_passengers WHERE trip_id=$2)
+       WHERE s.organization_id=$1
+       GROUP BY s.id
+       ORDER BY s.sequence ASC`, [trip.organization_id, req.params.id]);
+        ok(res, stops.filter((s) => s.student_names.length > 0).map((s) => ({ ...mapStop(s), studentNames: s.student_names })));
     }
     catch (e) {
         fail(res, e.message, 500);
@@ -960,8 +1055,9 @@ async function runSafeRide360RetentionJob() {
         const notif = await (0, db_1.query)(`DELETE FROM saferide360_notifications WHERE type != 'location_update' AND created_at < NOW() - INTERVAL '${notifRetentionDays} days' RETURNING id`);
         const tp = await (0, db_1.query)(`DELETE FROM saferide360_trip_passengers WHERE created_at < NOW() - INTERVAL '${TRIP_DATA_RETENTION_DAYS} days' RETURNING id`);
         const trips = await (0, db_1.query)(`DELETE FROM saferide360_trips WHERE status='completed' AND actual_end_at < NOW() - INTERVAL '${TRIP_DATA_RETENTION_DAYS} days' RETURNING id`);
-        if (gps.length || locNotif.length || notif.length || tp.length || trips.length) {
-            logger_1.logger.info(`[SafeRide360:retention] purged gps=${gps.length} location_notifications=${locNotif.length} other_notifications=${notif.length} (retention=${notifRetentionDays}d) trip_passengers=${tp.length} trips=${trips.length}`);
+        const absences = await (0, db_1.query)(`DELETE FROM saferide360_passenger_absences WHERE absence_date < CURRENT_DATE - ${TRIP_DATA_RETENTION_DAYS} RETURNING id`);
+        if (gps.length || locNotif.length || notif.length || tp.length || trips.length || absences.length) {
+            logger_1.logger.info(`[SafeRide360:retention] purged gps=${gps.length} location_notifications=${locNotif.length} other_notifications=${notif.length} (retention=${notifRetentionDays}d) trip_passengers=${tp.length} trips=${trips.length} absences=${absences.length}`);
         }
     }
     catch (e) {
