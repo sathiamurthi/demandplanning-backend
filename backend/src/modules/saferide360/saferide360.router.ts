@@ -852,9 +852,20 @@ saferide360Router.post('/trips/:id/alert', srAuth, requireDriver, async (req: SR
 });
 
 // ══════════════════════ GUARDIAN VIEWS ═══════════════════════════════════
+// Resolved pickup/drop stop name + coordinates alongside each child — "for
+// easy access" a parent shouldn't have to wait for an active trip just to
+// see where their kid's stop actually is.
 saferide360Router.get('/guardian/children', srAuth, requireGuardian, async (req: SRReq, res) => {
   try {
-    const rows = await query<any>('SELECT * FROM saferide360_passengers WHERE guardian_phone=$1', [req.srUser!.sub]);
+    const rows = await query<any>(
+      `SELECT p.*, ps.name AS pickup_stop_name, ps.lat AS pickup_stop_lat, ps.lng AS pickup_stop_lng,
+              ds.name AS drop_stop_name, ds.lat AS drop_stop_lat, ds.lng AS drop_stop_lng
+       FROM saferide360_passengers p
+       LEFT JOIN saferide360_stops ps ON ps.id = p.pickup_stop_id
+       LEFT JOIN saferide360_stops ds ON ds.id = p.drop_stop_id
+       WHERE p.guardian_phone=$1`,
+      [req.srUser!.sub]
+    );
     const today = new Date().toISOString().slice(0, 10);
     const ids = rows.map((r: any) => r.id);
     const absentRows = ids.length ? await query<any>(
@@ -862,7 +873,15 @@ saferide360Router.get('/guardian/children', srAuth, requireGuardian, async (req:
       [today, ids]
     ) : [];
     const absentSet = new Set(absentRows.map((r: any) => r.passenger_id));
-    ok(res, rows.map((r: any) => ({ ...mapPassenger(r), absentToday: absentSet.has(r.id) })));
+    ok(res, rows.map((r: any) => ({
+      ...mapPassenger(r), absentToday: absentSet.has(r.id),
+      pickupStopName: r.pickup_stop_name || undefined,
+      pickupLat: r.pickup_stop_lat != null ? Number(r.pickup_stop_lat) : undefined,
+      pickupLng: r.pickup_stop_lng != null ? Number(r.pickup_stop_lng) : undefined,
+      dropStopName: r.drop_stop_name || undefined,
+      dropLat: r.drop_stop_lat != null ? Number(r.drop_stop_lat) : undefined,
+      dropLng: r.drop_stop_lng != null ? Number(r.drop_stop_lng) : undefined,
+    })));
   } catch (e: any) {
     fail(res, e.message, 500);
   }
@@ -903,26 +922,36 @@ saferide360Router.delete('/guardian/passengers/:id/absent-today', srAuth, requir
 // Today's trip status for every one of this guardian's children — may span
 // multiple trips/drivers/organizations if they have kids at different
 // stops or schools.
+// Both directions (pickup and drop) show up here as separate entries when
+// they exist for a day — the stop joined is whichever one is relevant to
+// THAT trip's direction, so a parent sees the right location for a pickup
+// trip vs. a drop trip, not always the same one. createdAt is included so
+// the frontend can group entries by date ("2 trips today: pickup, drop").
 saferide360Router.get('/guardian/today', srAuth, requireGuardian, async (req: SRReq, res) => {
   try {
     const rows = await query<any>(
       `SELECT tp.*, p.name AS passenger_name, p.pickup_stop_id, p.drop_stop_id,
-              t.id AS trip_id_full, t.name AS trip_name, t.status AS trip_status, t.direction,
+              t.id AS trip_id_full, t.name AS trip_name, t.status AS trip_status, t.direction, t.created_at,
               t.live_lat, t.live_lng, t.live_updated_at, t.actual_start_at,
-              d.name AS driver_name, d.phone AS driver_phone, d.vehicle_number, d.vehicle_type
+              d.name AS driver_name, d.phone AS driver_phone, d.vehicle_number, d.vehicle_type,
+              s.name AS stop_name, s.lat AS stop_lat, s.lng AS stop_lng
        FROM saferide360_trip_passengers tp
        JOIN saferide360_passengers p ON p.id = tp.passenger_id
        JOIN saferide360_trips t ON t.id = tp.trip_id
        JOIN saferide360_drivers d ON d.id = t.driver_id
+       LEFT JOIN saferide360_stops s ON s.id = (CASE WHEN t.direction='drop' THEN p.drop_stop_id ELSE p.pickup_stop_id END)
        WHERE p.guardian_phone=$1 AND t.created_at >= NOW() - INTERVAL '2 days'
        ORDER BY t.created_at DESC`,
       [req.srUser!.sub]
     );
     ok(res, rows.map((r: any) => ({
       tripPassengerId: r.id, passengerId: r.passenger_id, passengerName: r.passenger_name, status: r.status, pickedAt: r.picked_at || undefined,
-      tripId: r.trip_id_full, tripName: r.trip_name, tripStatus: r.trip_status, direction: r.direction,
+      tripId: r.trip_id_full, tripName: r.trip_name, tripStatus: r.trip_status, direction: r.direction, createdAt: r.created_at,
       liveLat: r.live_lat != null ? Number(r.live_lat) : undefined, liveLng: r.live_lng != null ? Number(r.live_lng) : undefined, liveUpdatedAt: r.live_updated_at || undefined,
       driverName: r.driver_name, driverPhone: r.driver_phone, vehicleNumber: r.vehicle_number, vehicleType: r.vehicle_type,
+      stopName: r.stop_name || undefined,
+      stopLat: r.stop_lat != null ? Number(r.stop_lat) : undefined,
+      stopLng: r.stop_lng != null ? Number(r.stop_lng) : undefined,
     })));
   } catch (e: any) {
     fail(res, e.message, 500);
