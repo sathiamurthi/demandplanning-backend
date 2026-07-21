@@ -3605,5 +3605,33 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_tea_facility_utilities_tenant ON tea_facility_utilities(tenant_id, usage_date);
       `
         },
+        {
+            // TeaFactory360 — field "Agent" role: a tenant staff member (not the
+            // grower) who does growers, tea collection, dispatch, payments and
+            // vehicle management from a restricted, separate login — distinct
+            // from the owner/manager full-ERP login and from the grower portal.
+            // Own migration (not folded into 085_tea_roles) since a new enum
+            // value can't be added and used in the same transaction.
+            name: '094_tea_agent_role',
+            sql: `
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'agent'; EXCEPTION WHEN others THEN NULL; END $$;
+      `
+        },
+        {
+            // Demo agent login for the seeded ABC Tea Agency tenant — same
+            // password convention (Admin@123) as the owner demo login.
+            name: '095_tea_agent_seed',
+            sql: `
+        INSERT INTO users (id, tenant_id, store_id, email, password_hash, role, first_name, last_name, is_active)
+        SELECT 'aaaaaaaa-1111-2222-3333-444444444404', t.id, s.id, 'agent@abcteaagency.com',
+               '$2b$10$laSPM4SB2UALjDFzJnjUS.Hx5MX.of2eh0TYA09WIcCtvLtHHATg.',
+               'agent', 'Field', 'Agent', TRUE
+        FROM tenants t
+        JOIN stores s ON s.tenant_id = t.id
+        WHERE t.id = 'aaaaaaaa-1111-2222-3333-444444444401'
+        ORDER BY s.created_at ASC LIMIT 1
+        ON CONFLICT (id) DO NOTHING;
+      `
+        },
     ];
 }

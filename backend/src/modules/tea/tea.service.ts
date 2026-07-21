@@ -166,7 +166,7 @@ teaRouter.get('/growers', async (req, res) => {
 });
 
 // Create grower
-teaRouter.post('/growers', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/growers', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { name, grower_code, phone, address, land_acres, land_type, pluck_cycle_days } = req.body;
@@ -184,7 +184,7 @@ teaRouter.post('/growers', requireRole('superadmin', 'owner', 'manager'), async 
 });
 
 // Update grower
-teaRouter.put('/growers/:growerId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.put('/growers/:growerId', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, growerId } = req.params as any;
     const { name, phone, address, land_acres, land_type, pluck_cycle_days, is_active, last_pluck_date, will_pluck } = req.body;
@@ -327,7 +327,7 @@ teaRouter.get('/collections/batches', async (req, res) => {
 });
 
 // Create batch (one per day usually)
-teaRouter.post('/collections/batches', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager'), async (req, res) => {
+teaRouter.post('/collections/batches', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { collection_date, notes } = req.body;
@@ -366,7 +366,7 @@ teaRouter.get('/collections/batches/:batchId/entries', async (req, res) => {
 });
 
 // Add collection entry
-teaRouter.post('/collections/batches/:batchId/entries', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager'), async (req, res) => {
+teaRouter.post('/collections/batches/:batchId/entries', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, batchId } = req.params as any;
     const { grower_id, gross_weight, moisture_deduction_kg = 0, grade = 'A', notes } = req.body;
@@ -405,7 +405,7 @@ teaRouter.post('/collections/batches/:batchId/entries', requireRole('superadmin'
 });
 
 // Update collection entry
-teaRouter.put('/collections/entries/:entryId', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+teaRouter.put('/collections/entries/:entryId', requireRole('superadmin', 'owner', 'manager', 'staff', 'agent'), async (req, res) => {
   try {
     const { entryId } = req.params as any;
     const { gross_weight, moisture_deduction_kg = 0, grade } = req.body;
@@ -586,7 +586,7 @@ teaRouter.get('/dispatches', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
-teaRouter.post('/dispatches', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/dispatches', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { factory_id, vehicle_id, dispatch_date, batch_ids, total_kg = 0, notes, driver_name, driver_phone } = req.body;
@@ -639,7 +639,7 @@ teaRouter.get('/dispatches/:dispatchId/bags', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
-teaRouter.post('/dispatches/:dispatchId/bags', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+teaRouter.post('/dispatches/:dispatchId/bags', requireRole('superadmin', 'owner', 'manager', 'staff', 'agent'), async (req, res) => {
   try {
     const { tenantId, dispatchId } = req.params as any;
     const { weight_kg, grade = 'A', notes } = req.body;
@@ -668,7 +668,7 @@ teaRouter.post('/dispatches/:dispatchId/bags', requireRole('superadmin', 'owner'
 });
 
 // Update factory weight on a single bag
-teaRouter.patch('/dispatches/:dispatchId/bags/:bagId', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+teaRouter.patch('/dispatches/:dispatchId/bags/:bagId', requireRole('superadmin', 'owner', 'manager', 'staff', 'agent'), async (req, res) => {
   try {
     const { dispatchId, bagId } = req.params as any;
     const { factory_weight_kg } = req.body;
@@ -682,7 +682,7 @@ teaRouter.patch('/dispatches/:dispatchId/bags/:bagId', requireRole('superadmin',
 });
 
 // Update dispatch-level consolidated factory weight
-teaRouter.patch('/dispatches/:dispatchId', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+teaRouter.patch('/dispatches/:dispatchId', requireRole('superadmin', 'owner', 'manager', 'staff', 'agent'), async (req, res) => {
   try {
     const { tenantId, dispatchId } = req.params as any;
     const { factory_total_kg, status } = req.body;
@@ -700,7 +700,7 @@ teaRouter.patch('/dispatches/:dispatchId', requireRole('superadmin', 'owner', 'm
   } catch (e: any) { fail(res, e.message); }
 });
 
-teaRouter.delete('/dispatches/:dispatchId/bags/:bagId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.delete('/dispatches/:dispatchId/bags/:bagId', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, dispatchId, bagId } = req.params as any;
     await query(`DELETE FROM tea_dispatch_bags WHERE id=$1 AND dispatch_id=$2`, [bagId, dispatchId]);
@@ -903,7 +903,7 @@ teaRouter.get('/settlements/grower', async (req, res) => {
 });
 
 // Generate weekly grower settlement
-teaRouter.post('/settlements/grower/generate', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/settlements/grower/generate', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { week_start_date, week_end_date, period_start, period_end } = req.body;
@@ -991,7 +991,7 @@ teaRouter.post('/settlements/grower/generate', requireRole('superadmin', 'owner'
 });
 
 // Mark settlement paid
-teaRouter.put('/settlements/grower/:settlementId/pay', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.put('/settlements/grower/:settlementId/pay', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, settlementId } = req.params as any;
     const { payment_method, payment_ref } = req.body;
@@ -1008,7 +1008,7 @@ teaRouter.put('/settlements/grower/:settlementId/pay', requireRole('superadmin',
 });
 
 // Grower advances
-teaRouter.post('/advances/grower', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/advances/grower', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { grower_id, amount, advance_date, notes } = req.body;
@@ -1295,7 +1295,7 @@ teaRouter.get('/vehicles/:vehicleId/fuel', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
-teaRouter.post('/vehicles/:vehicleId/fuel', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager'), async (req, res) => {
+teaRouter.post('/vehicles/:vehicleId/fuel', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, vehicleId } = req.params as any;
     const { log_date, fuel_type = 'diesel', liters, rate_per_liter, total_cost, odometer_km, notes } = req.body;
@@ -2028,7 +2028,7 @@ teaRouter.get('/vehicles/:vehicleId/trips', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
-teaRouter.post('/vehicles/:vehicleId/trips', requireRole('superadmin', 'owner', 'manager', 'staff', 'driver'), async (req, res) => {
+teaRouter.post('/vehicles/:vehicleId/trips', requireRole('superadmin', 'owner', 'manager', 'staff', 'driver', 'agent'), async (req, res) => {
   try {
     const { tenantId, vehicleId } = req.params as any;
     const { trip_date, distance_km, fuel_used_l, start_time, end_time, status = 'completed' } = req.body;
@@ -2089,7 +2089,7 @@ teaRouter.put('/vehicle-maintenance/:recordId', requireRole('superadmin', 'owner
 // tea_vehicles is the same shape a future Traccar webhook would write
 // into, so swapping the position SOURCE later is a config change, not a
 // schema or map-rendering change.
-teaRouter.patch('/vehicles/:vehicleId/live', requireRole('superadmin', 'owner', 'manager', 'driver'), async (req, res) => {
+teaRouter.patch('/vehicles/:vehicleId/live', requireRole('superadmin', 'owner', 'manager', 'driver', 'agent'), async (req, res) => {
   try {
     const { tenantId, vehicleId } = req.params as any;
     const { lat, lng } = req.body;
@@ -2701,7 +2701,7 @@ teaRouter.get('/compliance/calendar', async (req, res) => {
 // feature. Returns a DRAFT for the clerk to confirm, never writes
 // directly to tea_collections, since a misheard number here is a real
 // grower-payment dispute waiting to happen.
-teaRouter.post('/ai/parse-intake', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager'), async (req, res) => {
+teaRouter.post('/ai/parse-intake', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager', 'agent'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
     const { text } = req.body;
@@ -2739,7 +2739,7 @@ Return ONLY a JSON object, no markdown fences, shaped exactly like:
 // spec's #2 AI feature. Compares this settlement to the grower's own
 // trailing average, not a factory-wide average, since land size/cycle
 // varies a lot grower to grower.
-teaRouter.post('/ai/payment-summary/:growerId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/ai/payment-summary/:growerId', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, growerId } = req.params as any;
     const { settlement_id } = req.body;
@@ -2780,7 +2780,7 @@ Keep it under 80 words. End with the net payable amount clearly stated.`;
 
 // Send the AI-generated summary straight to the grower's WhatsApp —
 // separate step from generating it, so the owner/clerk can read it first.
-teaRouter.post('/ai/payment-summary/:growerId/send', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+teaRouter.post('/ai/payment-summary/:growerId/send', requireRole('superadmin', 'owner', 'manager', 'agent'), async (req, res) => {
   try {
     const { tenantId, growerId } = req.params as any;
     const { summary } = req.body;
@@ -3016,5 +3016,57 @@ teaRouter.get('/ai/compliance-alerts', async (req, res) => {
 ${rows.map((r: any) => `${r.label} — ${r.type} (${r.source}) — ${r.status === 'overdue' ? 'OVERDUE' : 'due'} ${r.date}`).join('\n')}`;
     const summary = await askClaude('tea_compliance_alerts', prompt, tenantId, 250);
     ok(res, { items: rows, summary: summary.trim() });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — NOTIFICATIONS (agent-facing action feed: unpaid grower
+// payments, batches waiting to be dispatched, vehicle maintenance due —
+// the small set of things a field agent needs to act on today, pulled
+// from data that already exists rather than a separate notifications table)
+// ════════════════════════════════════════════════════════════════════════
+teaRouter.get('/notifications', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+
+    const [unpaid] = await query<any>(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(net_payable), 0) AS amount
+       FROM tea_grower_settlements WHERE tenant_id=$1 AND paid=FALSE`,
+      [tenantId]
+    );
+    const [pendingDispatch] = await query<any>(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_kg), 0) AS kg
+       FROM tea_collection_batches WHERE tenant_id=$1 AND status='pending_dispatch'`,
+      [tenantId]
+    );
+    const maintDue = await query<any>(
+      `SELECT vm.type, vm.due_date, tv.vehicle_number,
+              CASE WHEN vm.due_date < CURRENT_DATE THEN 'overdue' ELSE 'due_soon' END AS status
+       FROM tea_vehicle_maintenance vm JOIN tea_vehicles tv ON tv.id=vm.vehicle_id
+       WHERE vm.tenant_id=$1 AND vm.due_date IS NOT NULL AND vm.due_date <= CURRENT_DATE + 14
+       ORDER BY vm.due_date`,
+      [tenantId]
+    );
+
+    const items: any[] = [];
+    if (unpaid?.count > 0) {
+      items.push({
+        type: 'grower_payment', severity: 'high',
+        message: `${unpaid.count} grower payment${unpaid.count > 1 ? 's' : ''} pending — ₹${Math.round(parseFloat(unpaid.amount))} total`,
+      });
+    }
+    if (pendingDispatch?.count > 0) {
+      items.push({
+        type: 'pending_dispatch', severity: 'medium',
+        message: `${pendingDispatch.count} collection batch${pendingDispatch.count > 1 ? 'es' : ''} waiting to be dispatched (${parseFloat(pendingDispatch.kg).toFixed(0)} kg)`,
+      });
+    }
+    for (const m of maintDue) {
+      items.push({
+        type: 'vehicle_maintenance', severity: m.status === 'overdue' ? 'high' : 'medium',
+        message: `${m.vehicle_number}: ${String(m.type).replace('_', ' ')} ${m.status === 'overdue' ? 'overdue' : `due ${new Date(m.due_date).toLocaleDateString('en-IN')}`}`,
+      });
+    }
+    ok(res, items);
   } catch (e: any) { fail(res, e.message, 500); }
 });
