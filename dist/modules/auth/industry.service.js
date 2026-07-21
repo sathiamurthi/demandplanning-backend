@@ -105,7 +105,7 @@ class DeleteIndustryCommandHandler {
 class ListIndustriesQueryHandler {
     async execute(q) {
         const where = q.includeInactive ? '' : 'WHERE is_active=TRUE';
-        return (0, db_1.query)(`SELECT id, id as "industry_id", display_name FROM industry_configs ${where} ORDER BY display_name`);
+        return (0, db_1.query)(`SELECT id, industry_id, display_name FROM industry_configs ${where} ORDER BY display_name`);
     }
 }
 class GetIndustryQueryHandler {

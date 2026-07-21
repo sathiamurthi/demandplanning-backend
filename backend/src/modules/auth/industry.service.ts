@@ -127,7 +127,7 @@ interface ListIndustriesQuery extends IQuery {
 class ListIndustriesQueryHandler implements IQueryHandler<ListIndustriesQuery, any[]> {
   async execute(q: ListIndustriesQuery) {
     const where = q.includeInactive ? '' : 'WHERE is_active=TRUE';
-    return query<any>(`SELECT id, id as "industry_id", display_name FROM industry_configs ${where} ORDER BY display_name`);
+    return query<any>(`SELECT id, industry_id, display_name FROM industry_configs ${where} ORDER BY display_name`);
   }
 }
 
