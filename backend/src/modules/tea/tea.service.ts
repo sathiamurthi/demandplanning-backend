@@ -4,38 +4,32 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
-import Anthropic from '@anthropic-ai/sdk';
 import { query, queryOne, withTransaction } from '../../config/db';
 import { authMiddleware } from '../auth/auth.service';
 import { requireRole, requireTenantAccess } from '../../core/guards/roleGuard';
 import { signJwt, verifyJwt } from '../../utils/jwtUtils';
 import { logAIUsage } from '../superadmin/ai-pipeline.service';
 import { sendWhatsAppText, normalizeWhatsAppPhone } from '../../utils/whatsapp';
+import { callAI } from '../../config/aiService';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
-const AI_MODEL = 'claude-haiku-4-5-20251001';
-
-// Shared Claude call helper for every TeaFactory360 AI feature below — one
-// place to keep the usage-logging pattern consistent with the rest of the
-// codebase (ai.service.ts) instead of repeating it per endpoint.
+// Shared AI call helper for every TeaFactory360 AI feature below — goes
+// through the same callAI() fallback chain (Anthropic -> Gemini -> Azure
+// OpenAI) already used by Data360, so a low-credit/rate-limited Anthropic
+// account doesn't take every tea AI feature down with it. Usage-logging
+// pattern matches the rest of the codebase (ai.service.ts).
 async function askClaude(feature: string, prompt: string, tenantId?: string, maxTokens = 500): Promise<string> {
   const t0 = Date.now();
   try {
-    const msg = await anthropic.messages.create({
-      model: AI_MODEL,
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const text = (msg.content[0] as any).text as string;
+    const res = await callAI({ prompt, maxTokens });
     await logAIUsage({
-      feature, model: AI_MODEL, tenantId,
-      promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens,
+      feature, model: res.model, tenantId,
+      promptTokens: res.inputTokens, completionTokens: res.outputTokens,
       latencyMs: Date.now() - t0, status: 'success',
     });
-    return text;
+    return res.text;
   } catch (e: any) {
     await logAIUsage({
-      feature, model: AI_MODEL, tenantId, promptTokens: 0, completionTokens: 0,
+      feature, model: 'unknown', tenantId, promptTokens: 0, completionTokens: 0,
       latencyMs: Date.now() - t0, status: 'error', errorMsg: e.message,
     });
     throw e;
