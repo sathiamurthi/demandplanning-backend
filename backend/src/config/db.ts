@@ -3245,5 +3245,400 @@ END $$;
         );
       `
     },
+    {
+      // TeaFactory360 — new roles for the modules below. Same pattern as
+      // 038's 'collection_manager' addition (ALTER TYPE ... ADD VALUE
+      // wrapped so a re-run against an already-migrated DB doesn't error).
+      name: '085_tea_roles',
+      sql: `
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'driver'; EXCEPTION WHEN others THEN NULL; END $$;
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'estate_manager'; EXCEPTION WHEN others THEN NULL; END $$;
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'maintenance'; EXCEPTION WHEN others THEN NULL; END $$;
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'sales_manager'; EXCEPTION WHEN others THEN NULL; END $$;
+        DO $$ BEGIN ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'store_keeper'; EXCEPTION WHEN others THEN NULL; END $$;
+      `
+    },
+    {
+      // TeaFactory360 — Estate & workforce. tea_estate_workers is the
+      // FACTORY's own workforce (plots, pluckers, fitters, tea makers) —
+      // distinct from the existing tea_grower_workers, which are a
+      // GROWER's own hired field pluckers managed in the grower portal.
+      name: '086_tea_estate_workforce',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_estate_plots (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          area_hectares DECIMAL(8,2),
+          manager_user_id UUID REFERENCES users(id),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_estate_plots_tenant ON tea_estate_plots(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_estate_workers (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          phone VARCHAR(20),
+          role VARCHAR(30) NOT NULL DEFAULT 'other',
+          employment_type VARCHAR(20) NOT NULL DEFAULT 'permanent',
+          plot_id UUID REFERENCES tea_estate_plots(id) ON DELETE SET NULL,
+          daily_wage DECIMAL(10,2) DEFAULT 0,
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_estate_workers_tenant ON tea_estate_workers(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_estate_attendance (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          worker_id UUID NOT NULL REFERENCES tea_estate_workers(id) ON DELETE CASCADE,
+          attendance_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          status VARCHAR(10) NOT NULL DEFAULT 'present',
+          method VARCHAR(10) NOT NULL DEFAULT 'manual',
+          wage_computed DECIMAL(10,2) DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(worker_id, attendance_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_estate_attendance_tenant_date ON tea_estate_attendance(tenant_id, attendance_date);
+
+        -- Wage computation built in-house with standard simplified
+        -- EPF/ESI/TDS slabs (see tea.service.ts comment at point of use) —
+        -- the spec explicitly flags this as a build-vs-integrate decision;
+        -- review against a compliance professional before real payroll runs.
+        CREATE TABLE IF NOT EXISTS tea_payroll_runs (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          worker_id UUID NOT NULL REFERENCES tea_estate_workers(id) ON DELETE CASCADE,
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          gross_wage DECIMAL(12,2) NOT NULL DEFAULT 0,
+          epf DECIMAL(12,2) DEFAULT 0,
+          esi DECIMAL(12,2) DEFAULT 0,
+          tds DECIMAL(12,2) DEFAULT 0,
+          net_pay DECIMAL(12,2) NOT NULL DEFAULT 0,
+          payslip_url TEXT,
+          status VARCHAR(20) NOT NULL DEFAULT 'draft',
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(worker_id, period_start, period_end)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_payroll_tenant ON tea_payroll_runs(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_worker_insurance (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          worker_id UUID NOT NULL REFERENCES tea_estate_workers(id) ON DELETE CASCADE,
+          type VARCHAR(20) NOT NULL DEFAULT 'group_health',
+          provider VARCHAR(200),
+          policy_number VARCHAR(100),
+          expiry_date DATE,
+          next_checkup_date DATE,
+          status VARCHAR(10) NOT NULL DEFAULT 'ok',
+          reminder_sent_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_worker_insurance_tenant ON tea_worker_insurance(tenant_id);
+      `
+    },
+    {
+      // TeaFactory360 — Fleet extensions (trip logs, maintenance) + live
+      // map columns. Phone-based live position now (same proven pattern
+      // as SafeRide360's driver-phone broadcast) — live_lat/live_lng/
+      // live_updated_at on tea_vehicles is exactly the shape a future
+      // Traccar webhook would write into as well, so swapping the source
+      // later is a config change, not a schema change.
+      name: '087_tea_fleet_extensions',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_vehicle_trips (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          vehicle_id UUID NOT NULL REFERENCES tea_vehicles(id) ON DELETE CASCADE,
+          trip_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          distance_km DECIMAL(8,2),
+          fuel_used_l DECIMAL(8,2),
+          start_time TIMESTAMPTZ,
+          end_time TIMESTAMPTZ,
+          status VARCHAR(20) NOT NULL DEFAULT 'completed',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_vehicle_trips_tenant ON tea_vehicle_trips(tenant_id, trip_date);
+
+        CREATE TABLE IF NOT EXISTS tea_vehicle_maintenance (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          vehicle_id UUID NOT NULL REFERENCES tea_vehicles(id) ON DELETE CASCADE,
+          type VARCHAR(20) NOT NULL,
+          due_date DATE,
+          due_odometer_km INT,
+          last_done_date DATE,
+          last_done_odometer_km INT,
+          status VARCHAR(10) NOT NULL DEFAULT 'ok',
+          reminder_sent_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_vehicle_maint_tenant ON tea_vehicle_maintenance(tenant_id);
+
+        ALTER TABLE tea_vehicles
+          ADD COLUMN IF NOT EXISTS live_lat DECIMAL(9,6),
+          ADD COLUMN IF NOT EXISTS live_lng DECIMAL(9,6),
+          ADD COLUMN IF NOT EXISTS live_updated_at TIMESTAMPTZ;
+
+        CREATE TABLE IF NOT EXISTS tea_vehicle_positions (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          vehicle_id UUID NOT NULL REFERENCES tea_vehicles(id) ON DELETE CASCADE,
+          lat DECIMAL(9,6) NOT NULL,
+          lng DECIMAL(9,6) NOT NULL,
+          recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_vehicle_positions_vehicle ON tea_vehicle_positions(vehicle_id, recorded_at);
+      `
+    },
+    {
+      // TeaFactory360 — Suppliers & fuel. Distinct from the existing
+      // tea_vehicle_fuel_logs (vehicle running fuel) — this is factory
+      // input material: firing fuel, packaging, chemicals, spares.
+      name: '088_tea_suppliers_fuel',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_suppliers (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          category VARCHAR(20) NOT NULL DEFAULT 'other',
+          contact VARCHAR(200),
+          phone VARCHAR(20),
+          payment_terms VARCHAR(100),
+          is_active BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_suppliers_tenant ON tea_suppliers(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_supply_orders (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          supplier_id UUID NOT NULL REFERENCES tea_suppliers(id) ON DELETE CASCADE,
+          order_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          items TEXT,
+          quantity DECIMAL(10,2),
+          unit VARCHAR(20),
+          unit_cost DECIMAL(10,2),
+          total_cost DECIMAL(12,2),
+          status VARCHAR(20) NOT NULL DEFAULT 'ordered',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_supply_orders_tenant ON tea_supply_orders(tenant_id, order_date);
+
+        CREATE TABLE IF NOT EXISTS tea_fuel_consumption (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          consumption_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          fuel_type VARCHAR(30) NOT NULL DEFAULT 'firewood',
+          quantity_used DECIMAL(10,2) NOT NULL,
+          unit VARCHAR(20) DEFAULT 'kg',
+          cost DECIMAL(12,2),
+          batch_id UUID REFERENCES tea_collection_batches(id) ON DELETE SET NULL,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_fuel_consumption_tenant ON tea_fuel_consumption(tenant_id, consumption_date);
+      `
+    },
+    {
+      // TeaFactory360 — Core production stages. Extends the existing
+      // daily collection batch (already intake→dispatch) with the
+      // withering→firing→grading→packaging chain instead of a parallel
+      // "production batch" table, since a batch is already the natural
+      // unit of production here.
+      name: '089_tea_production_stages',
+      sql: `
+        ALTER TABLE tea_collection_batches
+          ADD COLUMN IF NOT EXISTS stage VARCHAR(20) NOT NULL DEFAULT 'intake',
+          ADD COLUMN IF NOT EXISTS made_tea_kg DECIMAL(10,2),
+          ADD COLUMN IF NOT EXISTS yield_pct DECIMAL(5,2),
+          ADD COLUMN IF NOT EXISTS stage_updated_at TIMESTAMPTZ;
+      `
+    },
+    {
+      name: '090_tea_machinery_vendors',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_machines (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          type VARCHAR(100),
+          install_date DATE,
+          last_service_date DATE,
+          status VARCHAR(20) NOT NULL DEFAULT 'ok',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_machines_tenant ON tea_machines(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_machine_compliance (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          machine_id UUID NOT NULL REFERENCES tea_machines(id) ON DELETE CASCADE,
+          type VARCHAR(20) NOT NULL,
+          due_date DATE,
+          provider VARCHAR(200),
+          status VARCHAR(10) NOT NULL DEFAULT 'ok',
+          reminder_sent_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_machine_compliance_tenant ON tea_machine_compliance(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_vendors (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          contact VARCHAR(200),
+          phone VARCHAR(20),
+          category VARCHAR(50),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_vendors_tenant ON tea_vendors(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_maintenance_tickets (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          machine_id UUID NOT NULL REFERENCES tea_machines(id) ON DELETE CASCADE,
+          raised_by VARCHAR(200),
+          issue TEXT NOT NULL,
+          assigned_to VARCHAR(200),
+          status VARCHAR(20) NOT NULL DEFAULT 'open',
+          cost DECIMAL(10,2),
+          closed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_maint_tickets_tenant ON tea_maintenance_tickets(tenant_id, status);
+
+        CREATE TABLE IF NOT EXISTS tea_vendor_quotes (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          ticket_id UUID NOT NULL REFERENCES tea_maintenance_tickets(id) ON DELETE CASCADE,
+          vendor_id UUID NOT NULL REFERENCES tea_vendors(id) ON DELETE CASCADE,
+          amount DECIMAL(10,2) NOT NULL,
+          delivery_days INT,
+          ai_recommended BOOLEAN DEFAULT FALSE,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_vendor_quotes_ticket ON tea_vendor_quotes(ticket_id);
+      `
+    },
+    {
+      name: '091_tea_inventory',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_stock_items (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          category VARCHAR(20) NOT NULL DEFAULT 'other',
+          unit VARCHAR(20) DEFAULT 'kg',
+          current_qty DECIMAL(10,2) DEFAULT 0,
+          reorder_level DECIMAL(10,2) DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_stock_items_tenant ON tea_stock_items(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_indents (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          requested_by VARCHAR(200),
+          stock_item_id UUID NOT NULL REFERENCES tea_stock_items(id) ON DELETE CASCADE,
+          quantity DECIMAL(10,2) NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'pending',
+          approved_by VARCHAR(200),
+          indent_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_indents_tenant ON tea_indents(tenant_id, status);
+
+        CREATE TABLE IF NOT EXISTS tea_store_issues (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          indent_id UUID NOT NULL REFERENCES tea_indents(id) ON DELETE CASCADE,
+          issued_qty DECIMAL(10,2) NOT NULL,
+          issued_by VARCHAR(200),
+          issue_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_store_issues_indent ON tea_store_issues(indent_id);
+      `
+    },
+    {
+      name: '092_tea_sales_auction',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_buyers (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          contact VARCHAR(200),
+          phone VARCHAR(20),
+          channel_preference VARCHAR(20) DEFAULT 'auction',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_buyers_tenant ON tea_buyers(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_auction_lots (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          batch_id UUID REFERENCES tea_collection_batches(id) ON DELETE SET NULL,
+          auction_house VARCHAR(200) DEFAULT 'Coonoor',
+          lot_number VARCHAR(50),
+          auction_date DATE,
+          quantity_kg DECIMAL(10,2),
+          reserve_price DECIMAL(10,2),
+          sold_price DECIMAL(10,2),
+          status VARCHAR(20) NOT NULL DEFAULT 'listed',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_auction_lots_tenant ON tea_auction_lots(tenant_id, auction_date);
+
+        CREATE TABLE IF NOT EXISTS tea_sale_transactions (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          batch_id UUID REFERENCES tea_collection_batches(id) ON DELETE SET NULL,
+          channel VARCHAR(20) NOT NULL DEFAULT 'private',
+          buyer_id UUID REFERENCES tea_buyers(id) ON DELETE SET NULL,
+          quantity_kg DECIMAL(10,2) NOT NULL,
+          price_per_kg DECIMAL(10,2) NOT NULL,
+          total_amount DECIMAL(12,2) NOT NULL,
+          sale_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          status VARCHAR(20) NOT NULL DEFAULT 'confirmed',
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_sale_tx_tenant ON tea_sale_transactions(tenant_id, sale_date);
+      `
+    },
+    {
+      // TeaFactory360 — Compliance & facility. Same status/reminder_sent_at
+      // shape as tea_vehicle_maintenance, tea_machine_compliance, and
+      // tea_worker_insurance, deliberately — this is what lets one query
+      // pull every upcoming renewal into a single alert feed.
+      name: '093_tea_compliance_facility',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_facilities (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          type VARCHAR(30) NOT NULL,
+          authority VARCHAR(200),
+          renewal_date DATE,
+          status VARCHAR(10) NOT NULL DEFAULT 'ok',
+          reminder_sent_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_facilities_tenant ON tea_facilities(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_facility_utilities (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          type VARCHAR(20) NOT NULL DEFAULT 'electricity',
+          usage_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          units_consumed DECIMAL(10,2),
+          cost DECIMAL(10,2),
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_facility_utilities_tenant ON tea_facility_utilities(tenant_id, usage_date);
+      `
+    },
   ];
 }

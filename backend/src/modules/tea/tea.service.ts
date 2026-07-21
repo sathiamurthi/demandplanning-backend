@@ -4,10 +4,43 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
+import Anthropic from '@anthropic-ai/sdk';
 import { query, queryOne, withTransaction } from '../../config/db';
 import { authMiddleware } from '../auth/auth.service';
 import { requireRole, requireTenantAccess } from '../../core/guards/roleGuard';
 import { signJwt, verifyJwt } from '../../utils/jwtUtils';
+import { logAIUsage } from '../superadmin/ai-pipeline.service';
+import { sendWhatsAppText, normalizeWhatsAppPhone } from '../../utils/whatsapp';
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY });
+const AI_MODEL = 'claude-haiku-4-5-20251001';
+
+// Shared Claude call helper for every TeaFactory360 AI feature below — one
+// place to keep the usage-logging pattern consistent with the rest of the
+// codebase (ai.service.ts) instead of repeating it per endpoint.
+async function askClaude(feature: string, prompt: string, tenantId?: string, maxTokens = 500): Promise<string> {
+  const t0 = Date.now();
+  try {
+    const msg = await anthropic.messages.create({
+      model: AI_MODEL,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const text = (msg.content[0] as any).text as string;
+    await logAIUsage({
+      feature, model: AI_MODEL, tenantId,
+      promptTokens: msg.usage.input_tokens, completionTokens: msg.usage.output_tokens,
+      latencyMs: Date.now() - t0, status: 'success',
+    });
+    return text;
+  } catch (e: any) {
+    await logAIUsage({
+      feature, model: AI_MODEL, tenantId, promptTokens: 0, completionTokens: 0,
+      latencyMs: Date.now() - t0, status: 'error', errorMsg: e.message,
+    });
+    throw e;
+  }
+}
 
 export const teaRouter = Router({ mergeParams: true });
 
@@ -1616,5 +1649,1378 @@ teaRouter.get('/ai/payment-risk', async (req, res) => {
       risk_level: risk,
       recommendation: deficit > 0 ? 'Request factory advance to cover deficit' : 'Cash flow healthy',
     });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — SUPPLIERS & FUEL
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/suppliers', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { category } = req.query as any;
+    const conds = ['tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (category) { conds.push(`category=$${i++}`); vals.push(category); }
+    const rows = await query<any>(`SELECT * FROM tea_suppliers WHERE ${conds.join(' AND ')} ORDER BY name`, vals);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/suppliers', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, category = 'other', contact, phone, payment_terms } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [s] = await query<any>(
+      `INSERT INTO tea_suppliers (tenant_id, name, category, contact, phone, payment_terms) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [tenantId, name, category, contact || null, phone || null, payment_terms || null]
+    );
+    ok(res, s, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/suppliers/:supplierId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, supplierId } = req.params as any;
+    const { name, category, contact, phone, payment_terms, is_active } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (category !== undefined) { sets.push(`category=$${i++}`); vals.push(category); }
+    if (contact !== undefined) { sets.push(`contact=$${i++}`); vals.push(contact); }
+    if (phone !== undefined) { sets.push(`phone=$${i++}`); vals.push(phone); }
+    if (payment_terms !== undefined) { sets.push(`payment_terms=$${i++}`); vals.push(payment_terms); }
+    if (is_active !== undefined) { sets.push(`is_active=$${i++}`); vals.push(is_active); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(supplierId, tenantId);
+    const [s] = await query<any>(`UPDATE tea_suppliers SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!s) return fail(res, 'Supplier not found', 404);
+    ok(res, s);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/supply-orders', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { status } = req.query as any;
+    const conds = ['so.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (status) { conds.push(`so.status=$${i++}`); vals.push(status); }
+    const rows = await query<any>(
+      `SELECT so.*, s.name AS supplier_name, s.category AS supplier_category
+       FROM tea_supply_orders so JOIN tea_suppliers s ON s.id = so.supplier_id
+       WHERE ${conds.join(' AND ')} ORDER BY so.order_date DESC LIMIT 100`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/supply-orders', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { supplier_id, order_date, items, quantity, unit, unit_cost, total_cost } = req.body;
+    if (!supplier_id) return fail(res, 'supplier_id required');
+    const computedTotal = total_cost || (quantity && unit_cost ? parseFloat(quantity) * parseFloat(unit_cost) : null);
+    const [o] = await query<any>(
+      `INSERT INTO tea_supply_orders (tenant_id, supplier_id, order_date, items, quantity, unit, unit_cost, total_cost)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenantId, supplier_id, order_date || new Date().toISOString().slice(0, 10), items || null,
+       quantity || null, unit || null, unit_cost || null, computedTotal]
+    );
+    ok(res, o, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/supply-orders/:orderId', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+  try {
+    const { tenantId, orderId } = req.params as any;
+    const { status } = req.body;
+    if (!status) return fail(res, 'status required');
+    const [o] = await query<any>(
+      `UPDATE tea_supply_orders SET status=$1 WHERE id=$2 AND tenant_id=$3 RETURNING *`,
+      [status, orderId, tenantId]
+    );
+    if (!o) return fail(res, 'Supply order not found', 404);
+    ok(res, o);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/fuel-consumption', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT * FROM tea_fuel_consumption WHERE tenant_id=$1 AND consumption_date BETWEEN $2 AND $3 ORDER BY consumption_date DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/fuel-consumption', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { consumption_date, fuel_type = 'firewood', quantity_used, unit = 'kg', cost, batch_id, notes } = req.body;
+    if (!quantity_used) return fail(res, 'quantity_used required');
+    const [f] = await query<any>(
+      `INSERT INTO tea_fuel_consumption (tenant_id, consumption_date, fuel_type, quantity_used, unit, cost, batch_id, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenantId, consumption_date || new Date().toISOString().slice(0, 10), fuel_type, quantity_used, unit, cost || null, batch_id || null, notes || null]
+    );
+    ok(res, f, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — ESTATE & WORKFORCE (factory's own plots/workers — see
+// migration 086 for why this is distinct from the existing grower-side
+// tea_grower_workers)
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/estate/plots', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>('SELECT * FROM tea_estate_plots WHERE tenant_id=$1 ORDER BY name', [tenantId]);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/estate/plots', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, area_hectares, manager_user_id } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [p] = await query<any>(
+      `INSERT INTO tea_estate_plots (tenant_id, name, area_hectares, manager_user_id) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [tenantId, name, area_hectares || null, manager_user_id || null]
+    );
+    ok(res, p, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/estate/workers', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { plot_id, role } = req.query as any;
+    const conds = ['w.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (plot_id) { conds.push(`w.plot_id=$${i++}`); vals.push(plot_id); }
+    if (role) { conds.push(`w.role=$${i++}`); vals.push(role); }
+    const rows = await query<any>(
+      `SELECT w.*, p.name AS plot_name FROM tea_estate_workers w LEFT JOIN tea_estate_plots p ON p.id=w.plot_id
+       WHERE ${conds.join(' AND ')} ORDER BY w.name`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/estate/workers', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, phone, role = 'other', employment_type = 'permanent', plot_id, daily_wage = 0 } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [w] = await query<any>(
+      `INSERT INTO tea_estate_workers (tenant_id, name, phone, role, employment_type, plot_id, daily_wage)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [tenantId, name, phone || null, role, employment_type, plot_id || null, daily_wage]
+    );
+    ok(res, w, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/estate/workers/:workerId', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId, workerId } = req.params as any;
+    const { name, phone, role, employment_type, plot_id, daily_wage, is_active } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (phone !== undefined) { sets.push(`phone=$${i++}`); vals.push(phone); }
+    if (role !== undefined) { sets.push(`role=$${i++}`); vals.push(role); }
+    if (employment_type !== undefined) { sets.push(`employment_type=$${i++}`); vals.push(employment_type); }
+    if (plot_id !== undefined) { sets.push(`plot_id=$${i++}`); vals.push(plot_id); }
+    if (daily_wage !== undefined) { sets.push(`daily_wage=$${i++}`); vals.push(daily_wage); }
+    if (is_active !== undefined) { sets.push(`is_active=$${i++}`); vals.push(is_active); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(workerId, tenantId);
+    const [w] = await query<any>(`UPDATE tea_estate_workers SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!w) return fail(res, 'Worker not found', 404);
+    ok(res, w);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Mark attendance — wage_computed follows the worker's own daily_wage;
+// absent days compute to 0 rather than being left null, so payroll can
+// sum a period without special-casing missing rows.
+teaRouter.post('/estate/attendance', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { worker_id, attendance_date, status = 'present', method = 'manual' } = req.body;
+    if (!worker_id) return fail(res, 'worker_id required');
+    const worker = await queryOne<any>('SELECT daily_wage FROM tea_estate_workers WHERE id=$1 AND tenant_id=$2', [worker_id, tenantId]);
+    if (!worker) return fail(res, 'Worker not found', 404);
+    const wage = status === 'present' ? parseFloat(worker.daily_wage || 0) : 0;
+    const [a] = await query<any>(
+      `INSERT INTO tea_estate_attendance (tenant_id, worker_id, attendance_date, status, method, wage_computed)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (worker_id, attendance_date) DO UPDATE SET status=$4, method=$5, wage_computed=$6
+       RETURNING *`,
+      [tenantId, worker_id, attendance_date || new Date().toISOString().slice(0, 10), status, method, wage]
+    );
+    ok(res, a, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/estate/attendance', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { date, from, to } = req.query as any;
+    const conds = ['a.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (date) { conds.push(`a.attendance_date=$${i++}`); vals.push(date); }
+    else if (from && to) { conds.push(`a.attendance_date BETWEEN $${i++} AND $${i++}`); vals.push(from, to); }
+    const rows = await query<any>(
+      `SELECT a.*, w.name AS worker_name, w.role FROM tea_estate_attendance a
+       JOIN tea_estate_workers w ON w.id=a.worker_id
+       WHERE ${conds.join(' AND ')} ORDER BY a.attendance_date DESC, w.name`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Wage totals per worker for a period — same-day compute, no separate
+// "run payroll" step needed just to see what's owed.
+teaRouter.get('/estate/wage-totals', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT w.id AS worker_id, w.name AS worker_name, w.role,
+              COUNT(*) FILTER (WHERE a.status='present')::int AS days_present,
+              COUNT(*) FILTER (WHERE a.status='absent')::int AS days_absent,
+              COALESCE(SUM(a.wage_computed), 0) AS total_wage
+       FROM tea_estate_workers w
+       LEFT JOIN tea_estate_attendance a ON a.worker_id=w.id AND a.attendance_date BETWEEN $2 AND $3
+       WHERE w.tenant_id=$1 AND w.is_active=TRUE
+       GROUP BY w.id, w.name, w.role ORDER BY w.name`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Payroll run — simplified, standard-slab EPF/ESI/TDS computed in-house.
+// The spec explicitly flags payroll compliance as a build-vs-integrate
+// decision; these are common baseline rates (EPF 12% employee share, ESI
+// 0.75% below the wage ceiling, TDS 0 by default since it depends on the
+// worker's full tax situation) — review against a compliance professional
+// before relying on this for real statutory filing.
+const EPF_RATE = 0.12;
+const ESI_RATE = 0.0075;
+const ESI_WAGE_CEILING = 21000;
+
+teaRouter.post('/payroll/generate', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { worker_id, period_start, period_end } = req.body;
+    if (!worker_id || !period_start || !period_end) return fail(res, 'worker_id, period_start and period_end required');
+
+    const [wageRow] = await query<any>(
+      `SELECT COALESCE(SUM(wage_computed), 0) AS gross FROM tea_estate_attendance
+       WHERE worker_id=$1 AND attendance_date BETWEEN $2 AND $3`,
+      [worker_id, period_start, period_end]
+    );
+    const gross = parseFloat(wageRow?.gross || 0);
+    const epf = Math.round(gross * EPF_RATE * 100) / 100;
+    const esi = gross <= ESI_WAGE_CEILING ? Math.round(gross * ESI_RATE * 100) / 100 : 0;
+    const tds = 0; // left at 0 by default — most estate/casual wages fall under the taxable threshold
+    const net_pay = gross - epf - esi - tds;
+
+    const [run] = await query<any>(
+      `INSERT INTO tea_payroll_runs (tenant_id, worker_id, period_start, period_end, gross_wage, epf, esi, tds, net_pay)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (worker_id, period_start, period_end)
+       DO UPDATE SET gross_wage=$5, epf=$6, esi=$7, tds=$8, net_pay=$9
+       RETURNING *`,
+      [tenantId, worker_id, period_start, period_end, gross, epf, esi, tds, net_pay]
+    );
+    ok(res, run, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/payroll', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT pr.*, w.name AS worker_name FROM tea_payroll_runs pr JOIN tea_estate_workers w ON w.id=pr.worker_id
+       WHERE pr.tenant_id=$1 ORDER BY pr.period_end DESC LIMIT 100`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.put('/payroll/:runId/mark-paid', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, runId } = req.params as any;
+    const [r] = await query<any>(
+      `UPDATE tea_payroll_runs SET status='paid' WHERE id=$1 AND tenant_id=$2 RETURNING *`,
+      [runId, tenantId]
+    );
+    if (!r) return fail(res, 'Payroll run not found', 404);
+    ok(res, r);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/worker-insurance', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT wi.*, w.name AS worker_name FROM tea_worker_insurance wi JOIN tea_estate_workers w ON w.id=wi.worker_id
+       WHERE wi.tenant_id=$1 ORDER BY wi.expiry_date NULLS LAST, wi.next_checkup_date NULLS LAST`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/worker-insurance', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { worker_id, type = 'group_health', provider, policy_number, expiry_date, next_checkup_date } = req.body;
+    if (!worker_id) return fail(res, 'worker_id required');
+    const [w] = await query<any>(
+      `INSERT INTO tea_worker_insurance (tenant_id, worker_id, type, provider, policy_number, expiry_date, next_checkup_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [tenantId, worker_id, type, provider || null, policy_number || null, expiry_date || null, next_checkup_date || null]
+    );
+    ok(res, w, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/worker-insurance/:recordId', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId, recordId } = req.params as any;
+    const { provider, policy_number, expiry_date, next_checkup_date, status } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (provider !== undefined) { sets.push(`provider=$${i++}`); vals.push(provider); }
+    if (policy_number !== undefined) { sets.push(`policy_number=$${i++}`); vals.push(policy_number); }
+    if (expiry_date !== undefined) { sets.push(`expiry_date=$${i++}`); vals.push(expiry_date); }
+    if (next_checkup_date !== undefined) { sets.push(`next_checkup_date=$${i++}`); vals.push(next_checkup_date); }
+    if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(recordId, tenantId);
+    const [w] = await query<any>(`UPDATE tea_worker_insurance SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!w) return fail(res, 'Record not found', 404);
+    ok(res, w);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — FLEET EXTENSIONS (trip logs, maintenance reminders, live map)
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/vehicles/:vehicleId/trips', async (req, res) => {
+  try {
+    const { tenantId, vehicleId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT * FROM tea_vehicle_trips WHERE vehicle_id=$1 AND tenant_id=$2 ORDER BY trip_date DESC LIMIT 60`,
+      [vehicleId, tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/vehicles/:vehicleId/trips', requireRole('superadmin', 'owner', 'manager', 'staff', 'driver'), async (req, res) => {
+  try {
+    const { tenantId, vehicleId } = req.params as any;
+    const { trip_date, distance_km, fuel_used_l, start_time, end_time, status = 'completed' } = req.body;
+    const [t] = await query<any>(
+      `INSERT INTO tea_vehicle_trips (tenant_id, vehicle_id, trip_date, distance_km, fuel_used_l, start_time, end_time, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenantId, vehicleId, trip_date || new Date().toISOString().slice(0, 10), distance_km || null, fuel_used_l || null, start_time || null, end_time || null, status]
+    );
+    ok(res, t, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/vehicles/:vehicleId/maintenance', async (req, res) => {
+  try {
+    const { tenantId, vehicleId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT * FROM tea_vehicle_maintenance WHERE vehicle_id=$1 AND tenant_id=$2 ORDER BY due_date NULLS LAST`,
+      [vehicleId, tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/vehicles/:vehicleId/maintenance', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, vehicleId } = req.params as any;
+    const { type, due_date, due_odometer_km, last_done_date, last_done_odometer_km } = req.body;
+    if (!type) return fail(res, 'type required');
+    const [m] = await query<any>(
+      `INSERT INTO tea_vehicle_maintenance (tenant_id, vehicle_id, type, due_date, due_odometer_km, last_done_date, last_done_odometer_km)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [tenantId, vehicleId, type, due_date || null, due_odometer_km || null, last_done_date || null, last_done_odometer_km || null]
+    );
+    ok(res, m, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/vehicle-maintenance/:recordId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, recordId } = req.params as any;
+    const { due_date, due_odometer_km, last_done_date, last_done_odometer_km, status } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (due_date !== undefined) { sets.push(`due_date=$${i++}`); vals.push(due_date); }
+    if (due_odometer_km !== undefined) { sets.push(`due_odometer_km=$${i++}`); vals.push(due_odometer_km); }
+    if (last_done_date !== undefined) { sets.push(`last_done_date=$${i++}`); vals.push(last_done_date); }
+    if (last_done_odometer_km !== undefined) { sets.push(`last_done_odometer_km=$${i++}`); vals.push(last_done_odometer_km); }
+    if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(recordId, tenantId);
+    const [m] = await query<any>(`UPDATE tea_vehicle_maintenance SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!m) return fail(res, 'Record not found', 404);
+    ok(res, m);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Live position — phone-based now (driver's phone browser broadcasts,
+// exact same proven pattern as SafeRide360's driver app). live_lat/lng on
+// tea_vehicles is the same shape a future Traccar webhook would write
+// into, so swapping the position SOURCE later is a config change, not a
+// schema or map-rendering change.
+teaRouter.patch('/vehicles/:vehicleId/live', requireRole('superadmin', 'owner', 'manager', 'driver'), async (req, res) => {
+  try {
+    const { tenantId, vehicleId } = req.params as any;
+    const { lat, lng } = req.body;
+    if (lat == null || lng == null) return fail(res, 'lat and lng required');
+    const [v] = await query<any>(
+      `UPDATE tea_vehicles SET live_lat=$1, live_lng=$2, live_updated_at=NOW() WHERE id=$3 AND tenant_id=$4 RETURNING *`,
+      [lat, lng, vehicleId, tenantId]
+    );
+    if (!v) return fail(res, 'Vehicle not found', 404);
+    await query(`INSERT INTO tea_vehicle_positions (vehicle_id, lat, lng) VALUES ($1,$2,$3)`, [vehicleId, lat, lng]);
+    ok(res, v);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// All vehicles + their live position, for the map view. idle_minutes lets
+// the frontend/AI flag "idle vehicle" (spec AI feature #3) without a
+// separate polling job.
+teaRouter.get('/vehicles/live', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT id, vehicle_number, driver_name, driver_phone, live_lat, live_lng, live_updated_at,
+              EXTRACT(EPOCH FROM (NOW() - live_updated_at))/60 AS minutes_since_update
+       FROM tea_vehicles WHERE tenant_id=$1 AND is_active=TRUE ORDER BY vehicle_number`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — CORE PRODUCTION STAGES (withering → firing → grading →
+// packaging, extending the existing daily collection batch)
+// ════════════════════════════════════════════════════════════════════════
+
+const PRODUCTION_STAGES = ['intake', 'withering', 'firing', 'grading', 'packaging', 'dispatched'];
+
+teaRouter.patch('/collections/batches/:batchId/stage', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
+  try {
+    const { tenantId, batchId } = req.params as any;
+    const { stage, made_tea_kg, fuel_consumption_id } = req.body;
+    if (!stage || !PRODUCTION_STAGES.includes(stage)) return fail(res, `stage must be one of ${PRODUCTION_STAGES.join(', ')}`);
+
+    const batch = await queryOne<any>('SELECT total_kg, made_tea_kg FROM tea_collection_batches WHERE id=$1 AND tenant_id=$2', [batchId, tenantId]);
+    if (!batch) return fail(res, 'Batch not found', 404);
+
+    const finalMadeKg = made_tea_kg !== undefined ? parseFloat(made_tea_kg) : (batch.made_tea_kg ? parseFloat(batch.made_tea_kg) : null);
+    const greenKg = parseFloat(batch.total_kg || 0);
+    const yieldPct = finalMadeKg && greenKg ? Math.round((finalMadeKg / greenKg) * 10000) / 100 : null;
+
+    if (fuel_consumption_id) {
+      await query(`UPDATE tea_fuel_consumption SET batch_id=$1 WHERE id=$2 AND tenant_id=$3`, [batchId, fuel_consumption_id, tenantId]);
+    }
+
+    const [b] = await query<any>(
+      `UPDATE tea_collection_batches SET stage=$1, made_tea_kg=$2, yield_pct=$3, stage_updated_at=NOW(), updated_at=NOW()
+       WHERE id=$4 AND tenant_id=$5 RETURNING *`,
+      [stage, finalMadeKg, yieldPct, batchId, tenantId]
+    );
+    ok(res, b);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Production yield report — green leaf in vs. made tea out, by batch
+teaRouter.get('/reports/production-yield', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT id, collection_date, stage, total_kg AS green_leaf_kg, made_tea_kg, yield_pct
+       FROM tea_collection_batches
+       WHERE tenant_id=$1 AND collection_date BETWEEN $2 AND $3
+       ORDER BY collection_date DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — MACHINERY & VENDORS
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/machines', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>('SELECT * FROM tea_machines WHERE tenant_id=$1 ORDER BY name', [tenantId]);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/machines', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, type, install_date, last_service_date } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [m] = await query<any>(
+      `INSERT INTO tea_machines (tenant_id, name, type, install_date, last_service_date) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, type || null, install_date || null, last_service_date || null]
+    );
+    ok(res, m, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/machines/:machineId', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId, machineId } = req.params as any;
+    const { name, type, install_date, last_service_date, status } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (type !== undefined) { sets.push(`type=$${i++}`); vals.push(type); }
+    if (install_date !== undefined) { sets.push(`install_date=$${i++}`); vals.push(install_date); }
+    if (last_service_date !== undefined) { sets.push(`last_service_date=$${i++}`); vals.push(last_service_date); }
+    if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(machineId, tenantId);
+    const [m] = await query<any>(`UPDATE tea_machines SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!m) return fail(res, 'Machine not found', 404);
+    ok(res, m);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/machines/:machineId/compliance', async (req, res) => {
+  try {
+    const { tenantId, machineId } = req.params as any;
+    const rows = await query<any>(
+      'SELECT * FROM tea_machine_compliance WHERE machine_id=$1 AND tenant_id=$2 ORDER BY due_date NULLS LAST',
+      [machineId, tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/machines/:machineId/compliance', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId, machineId } = req.params as any;
+    const { type, due_date, provider } = req.body;
+    if (!type) return fail(res, 'type required');
+    const [c] = await query<any>(
+      `INSERT INTO tea_machine_compliance (tenant_id, machine_id, type, due_date, provider) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, machineId, type, due_date || null, provider || null]
+    );
+    ok(res, c, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/vendors', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { category } = req.query as any;
+    const conds = ['tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (category) { conds.push(`category=$${i++}`); vals.push(category); }
+    const rows = await query<any>(`SELECT * FROM tea_vendors WHERE ${conds.join(' AND ')} ORDER BY name`, vals);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/vendors', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, contact, phone, category } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [v] = await query<any>(
+      `INSERT INTO tea_vendors (tenant_id, name, contact, phone, category) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, contact || null, phone || null, category || null]
+    );
+    ok(res, v, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/maintenance-tickets', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { status } = req.query as any;
+    const conds = ['t.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (status) { conds.push(`t.status=$${i++}`); vals.push(status); }
+    const rows = await query<any>(
+      `SELECT t.*, m.name AS machine_name FROM tea_maintenance_tickets t JOIN tea_machines m ON m.id=t.machine_id
+       WHERE ${conds.join(' AND ')} ORDER BY t.created_at DESC`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/maintenance-tickets', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { machine_id, raised_by, issue, assigned_to } = req.body;
+    if (!machine_id || !issue) return fail(res, 'machine_id and issue required');
+    const [t] = await query<any>(
+      `INSERT INTO tea_maintenance_tickets (tenant_id, machine_id, raised_by, issue, assigned_to)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, machine_id, raised_by || null, issue, assigned_to || null]
+    );
+    await query(`UPDATE tea_machines SET status='needs_service' WHERE id=$1 AND tenant_id=$2`, [machine_id, tenantId]);
+    ok(res, t, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/maintenance-tickets/:ticketId', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId, ticketId } = req.params as any;
+    const { assigned_to, status, cost } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (assigned_to !== undefined) { sets.push(`assigned_to=$${i++}`); vals.push(assigned_to); }
+    if (status !== undefined) {
+      sets.push(`status=$${i++}`); vals.push(status);
+      if (status === 'closed') sets.push(`closed_at=NOW()`);
+    }
+    if (cost !== undefined) { sets.push(`cost=$${i++}`); vals.push(cost); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(ticketId, tenantId);
+    const [t] = await query<any>(`UPDATE tea_maintenance_tickets SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!t) return fail(res, 'Ticket not found', 404);
+    if (status === 'closed') {
+      await query(`UPDATE tea_machines SET status='ok', last_service_date=CURRENT_DATE WHERE id=$1 AND tenant_id=$2`, [t.machine_id, tenantId]);
+    }
+    ok(res, t);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/maintenance-tickets/:ticketId/quotes', async (req, res) => {
+  try {
+    const { ticketId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT q.*, v.name AS vendor_name FROM tea_vendor_quotes q JOIN tea_vendors v ON v.id=q.vendor_id
+       WHERE q.ticket_id=$1 ORDER BY q.amount ASC`,
+      [ticketId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/maintenance-tickets/:ticketId/quotes', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId, ticketId } = req.params as any;
+    const { vendor_id, amount, delivery_days } = req.body;
+    if (!vendor_id || !amount) return fail(res, 'vendor_id and amount required');
+    const [q1] = await query<any>(
+      `INSERT INTO tea_vendor_quotes (tenant_id, ticket_id, vendor_id, amount, delivery_days) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, ticketId, vendor_id, amount, delivery_days || null]
+    );
+    ok(res, q1, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — INVENTORY MANAGEMENT (indent → approval → store issue)
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/stock-items', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>('SELECT * FROM tea_stock_items WHERE tenant_id=$1 ORDER BY name', [tenantId]);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/stock-items', requireRole('superadmin', 'owner', 'manager', 'store_keeper'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, category = 'other', unit = 'kg', current_qty = 0, reorder_level = 0 } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [s] = await query<any>(
+      `INSERT INTO tea_stock_items (tenant_id, name, category, unit, current_qty, reorder_level) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [tenantId, name, category, unit, current_qty, reorder_level]
+    );
+    ok(res, s, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/stock-items/:itemId', requireRole('superadmin', 'owner', 'manager', 'store_keeper'), async (req, res) => {
+  try {
+    const { tenantId, itemId } = req.params as any;
+    const { name, category, unit, current_qty, reorder_level } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (category !== undefined) { sets.push(`category=$${i++}`); vals.push(category); }
+    if (unit !== undefined) { sets.push(`unit=$${i++}`); vals.push(unit); }
+    if (current_qty !== undefined) { sets.push(`current_qty=$${i++}`); vals.push(current_qty); }
+    if (reorder_level !== undefined) { sets.push(`reorder_level=$${i++}`); vals.push(reorder_level); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(itemId, tenantId);
+    const [s] = await query<any>(`UPDATE tea_stock_items SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!s) return fail(res, 'Stock item not found', 404);
+    ok(res, s);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/indents', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { status } = req.query as any;
+    const conds = ['i.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (status) { conds.push(`i.status=$${i++}`); vals.push(status); }
+    const rows = await query<any>(
+      `SELECT i.*, s.name AS stock_item_name, s.unit FROM tea_indents i JOIN tea_stock_items s ON s.id=i.stock_item_id
+       WHERE ${conds.join(' AND ')} ORDER BY i.created_at DESC`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/indents', requireRole('superadmin', 'owner', 'manager', 'store_keeper', 'estate_manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { requested_by, stock_item_id, quantity, indent_date } = req.body;
+    if (!stock_item_id || !quantity) return fail(res, 'stock_item_id and quantity required');
+    const [i1] = await query<any>(
+      `INSERT INTO tea_indents (tenant_id, requested_by, stock_item_id, quantity, indent_date)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, requested_by || null, stock_item_id, quantity, indent_date || new Date().toISOString().slice(0, 10)]
+    );
+    ok(res, i1, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/indents/:indentId', requireRole('superadmin', 'owner', 'manager', 'store_keeper'), async (req, res) => {
+  try {
+    const { tenantId, indentId } = req.params as any;
+    const { status, approved_by } = req.body;
+    if (!status || !['approved', 'rejected'].includes(status)) return fail(res, "status must be 'approved' or 'rejected'");
+    const [i1] = await query<any>(
+      `UPDATE tea_indents SET status=$1, approved_by=$2 WHERE id=$3 AND tenant_id=$4 RETURNING *`,
+      [status, approved_by || null, indentId, tenantId]
+    );
+    if (!i1) return fail(res, 'Indent not found', 404);
+    ok(res, i1);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Store issue — deducts stock on issue, not on indent-approval, since
+// approval just authorizes the request; the physical hand-off is what
+// actually moves inventory.
+teaRouter.post('/indents/:indentId/issue', requireRole('superadmin', 'owner', 'manager', 'store_keeper'), async (req, res) => {
+  try {
+    const { tenantId, indentId } = req.params as any;
+    const { issued_qty, issued_by } = req.body;
+    if (!issued_qty) return fail(res, 'issued_qty required');
+
+    const indent = await queryOne<any>('SELECT * FROM tea_indents WHERE id=$1 AND tenant_id=$2', [indentId, tenantId]);
+    if (!indent) return fail(res, 'Indent not found', 404);
+    if (indent.status !== 'approved') return fail(res, 'Indent must be approved before it can be issued');
+
+    const [issue] = await withTransaction(async (client) => {
+      const [row] = (await client.query(
+        `INSERT INTO tea_store_issues (tenant_id, indent_id, issued_qty, issued_by) VALUES ($1,$2,$3,$4) RETURNING *`,
+        [tenantId, indentId, issued_qty, issued_by || null]
+      )).rows;
+      await client.query(`UPDATE tea_indents SET status='issued' WHERE id=$1`, [indentId]);
+      await client.query(
+        `UPDATE tea_stock_items SET current_qty = GREATEST(0, current_qty - $1) WHERE id=$2 AND tenant_id=$3`,
+        [issued_qty, indent.stock_item_id, tenantId]
+      );
+      return [row];
+    });
+    ok(res, issue, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/reports/inventory', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT s.*, (s.current_qty <= s.reorder_level) AS needs_reorder,
+              COALESCE((SELECT COUNT(*) FROM tea_indents i WHERE i.stock_item_id=s.id AND i.status='pending'), 0)::int AS pending_indents
+       FROM tea_stock_items s WHERE s.tenant_id=$1 ORDER BY needs_reorder DESC, s.name`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — SALES & AUCTION
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/buyers', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>('SELECT * FROM tea_buyers WHERE tenant_id=$1 ORDER BY name', [tenantId]);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/buyers', requireRole('superadmin', 'owner', 'manager', 'sales_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, contact, phone, channel_preference = 'auction' } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [b] = await query<any>(
+      `INSERT INTO tea_buyers (tenant_id, name, contact, phone, channel_preference) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, contact || null, phone || null, channel_preference]
+    );
+    ok(res, b, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/auction-lots', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { status } = req.query as any;
+    const conds = ['tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (status) { conds.push(`status=$${i++}`); vals.push(status); }
+    const rows = await query<any>(`SELECT * FROM tea_auction_lots WHERE ${conds.join(' AND ')} ORDER BY auction_date DESC NULLS LAST`, vals);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/auction-lots', requireRole('superadmin', 'owner', 'manager', 'sales_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { batch_id, auction_house = 'Coonoor', lot_number, auction_date, quantity_kg, reserve_price } = req.body;
+    if (!quantity_kg) return fail(res, 'quantity_kg required');
+    const [l] = await query<any>(
+      `INSERT INTO tea_auction_lots (tenant_id, batch_id, auction_house, lot_number, auction_date, quantity_kg, reserve_price)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [tenantId, batch_id || null, auction_house, lot_number || null, auction_date || null, quantity_kg, reserve_price || null]
+    );
+    ok(res, l, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/auction-lots/:lotId', requireRole('superadmin', 'owner', 'manager', 'sales_manager'), async (req, res) => {
+  try {
+    const { tenantId, lotId } = req.params as any;
+    const { sold_price, status } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (sold_price !== undefined) { sets.push(`sold_price=$${i++}`); vals.push(sold_price); }
+    if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(lotId, tenantId);
+    const [l] = await query<any>(`UPDATE tea_auction_lots SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!l) return fail(res, 'Auction lot not found', 404);
+    ok(res, l);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/sales', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { channel, from, to } = req.query as any;
+    const conds = ['s.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (channel) { conds.push(`s.channel=$${i++}`); vals.push(channel); }
+    if (from) { conds.push(`s.sale_date >= $${i++}`); vals.push(from); }
+    if (to) { conds.push(`s.sale_date <= $${i++}`); vals.push(to); }
+    const rows = await query<any>(
+      `SELECT s.*, b.name AS buyer_name FROM tea_sale_transactions s LEFT JOIN tea_buyers b ON b.id=s.buyer_id
+       WHERE ${conds.join(' AND ')} ORDER BY s.sale_date DESC LIMIT 100`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/sales', requireRole('superadmin', 'owner', 'manager', 'sales_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { batch_id, channel = 'private', buyer_id, quantity_kg, price_per_kg, sale_date } = req.body;
+    if (!quantity_kg || !price_per_kg) return fail(res, 'quantity_kg and price_per_kg required');
+    const total_amount = parseFloat(quantity_kg) * parseFloat(price_per_kg);
+    const [s] = await query<any>(
+      `INSERT INTO tea_sale_transactions (tenant_id, batch_id, channel, buyer_id, quantity_kg, price_per_kg, total_amount, sale_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenantId, batch_id || null, channel, buyer_id || null, quantity_kg, price_per_kg, total_amount, sale_date || new Date().toISOString().slice(0, 10)]
+    );
+    ok(res, s, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Sales report — volume/revenue by channel, realized price vs reserve
+teaRouter.get('/reports/sales', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const byChannel = await query<any>(
+      `SELECT channel, COUNT(*)::int AS transactions, SUM(quantity_kg) AS total_kg, SUM(total_amount) AS total_revenue,
+              AVG(price_per_kg) AS avg_price_per_kg
+       FROM tea_sale_transactions WHERE tenant_id=$1 AND sale_date BETWEEN $2 AND $3
+       GROUP BY channel`,
+      [tenantId, dateFrom, dateTo]
+    );
+    const auctionPerf = await query<any>(
+      `SELECT lot_number, reserve_price, sold_price,
+              CASE WHEN reserve_price > 0 THEN ROUND(((sold_price - reserve_price) / reserve_price * 100)::numeric, 1) ELSE NULL END AS pct_vs_reserve
+       FROM tea_auction_lots WHERE tenant_id=$1 AND status='sold' AND auction_date BETWEEN $2 AND $3
+       ORDER BY auction_date DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, { by_channel: byChannel, auction_performance: auctionPerf });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — COMPLIANCE & FACILITY
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/facilities', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>('SELECT * FROM tea_facilities WHERE tenant_id=$1 ORDER BY renewal_date NULLS LAST', [tenantId]);
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/facilities', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, type, authority, renewal_date } = req.body;
+    if (!name || !type) return fail(res, 'name and type required');
+    const [f] = await query<any>(
+      `INSERT INTO tea_facilities (tenant_id, name, type, authority, renewal_date) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, type, authority || null, renewal_date || null]
+    );
+    ok(res, f, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/facilities/:facilityId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, facilityId } = req.params as any;
+    const { authority, renewal_date, status } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (authority !== undefined) { sets.push(`authority=$${i++}`); vals.push(authority); }
+    if (renewal_date !== undefined) { sets.push(`renewal_date=$${i++}`); vals.push(renewal_date); }
+    if (status !== undefined) { sets.push(`status=$${i++}`); vals.push(status); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(facilityId, tenantId);
+    const [f] = await query<any>(`UPDATE tea_facilities SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!f) return fail(res, 'Facility not found', 404);
+    ok(res, f);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/facility-utilities', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT * FROM tea_facility_utilities WHERE tenant_id=$1 AND usage_date BETWEEN $2 AND $3 ORDER BY usage_date DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/facility-utilities', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { type = 'electricity', usage_date, units_consumed, cost } = req.body;
+    const [u] = await query<any>(
+      `INSERT INTO tea_facility_utilities (tenant_id, type, usage_date, units_consumed, cost) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, type, usage_date || new Date().toISOString().slice(0, 10), units_consumed || null, cost || null]
+    );
+    ok(res, u, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// Unified renewal calendar — pulls every upcoming/overdue renewal across
+// vehicles, machines, workers, and facility certificates into one feed,
+// exactly the shape the spec calls for so the owner checks one place
+// instead of four. due_soon = within 30 days.
+teaRouter.get('/compliance/calendar', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT 'vehicle' AS source, vm.type, vm.due_date AS date, tv.vehicle_number AS label,
+              CASE WHEN vm.due_date < CURRENT_DATE THEN 'overdue' WHEN vm.due_date <= CURRENT_DATE + 30 THEN 'due_soon' ELSE 'ok' END AS status
+       FROM tea_vehicle_maintenance vm JOIN tea_vehicles tv ON tv.id=vm.vehicle_id
+       WHERE vm.tenant_id=$1 AND vm.due_date IS NOT NULL
+       UNION ALL
+       SELECT 'machine', mc.type, mc.due_date, m.name,
+              CASE WHEN mc.due_date < CURRENT_DATE THEN 'overdue' WHEN mc.due_date <= CURRENT_DATE + 30 THEN 'due_soon' ELSE 'ok' END
+       FROM tea_machine_compliance mc JOIN tea_machines m ON m.id=mc.machine_id
+       WHERE mc.tenant_id=$1 AND mc.due_date IS NOT NULL
+       UNION ALL
+       SELECT 'worker_insurance', wi.type, COALESCE(wi.expiry_date, wi.next_checkup_date), w.name,
+              CASE WHEN COALESCE(wi.expiry_date, wi.next_checkup_date) < CURRENT_DATE THEN 'overdue'
+                   WHEN COALESCE(wi.expiry_date, wi.next_checkup_date) <= CURRENT_DATE + 30 THEN 'due_soon' ELSE 'ok' END
+       FROM tea_worker_insurance wi JOIN tea_estate_workers w ON w.id=wi.worker_id
+       WHERE wi.tenant_id=$1 AND (wi.expiry_date IS NOT NULL OR wi.next_checkup_date IS NOT NULL)
+       UNION ALL
+       SELECT 'facility', f.type, f.renewal_date, f.name,
+              CASE WHEN f.renewal_date < CURRENT_DATE THEN 'overdue' WHEN f.renewal_date <= CURRENT_DATE + 30 THEN 'due_soon' ELSE 'ok' END
+       FROM tea_facilities f
+       WHERE f.tenant_id=$1 AND f.renewal_date IS NOT NULL
+       ORDER BY date NULLS LAST`,
+      [tenantId]
+    );
+    ok(res, rows.filter((r: any) => r.status !== 'ok'));
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — NEW AI FEATURES (built on the existing forecast/rate/
+// factory/payment-risk endpoints above, same Claude integration pattern
+// as ai.service.ts elsewhere in this codebase)
+// ════════════════════════════════════════════════════════════════════════
+
+// Voice/WhatsApp leaf intake parsing (Tamil + English) — spec's #1 AI
+// feature. Returns a DRAFT for the clerk to confirm, never writes
+// directly to tea_collections, since a misheard number here is a real
+// grower-payment dispute waiting to happen.
+teaRouter.post('/ai/parse-intake', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { text } = req.body;
+    if (!text?.trim()) return fail(res, 'text required (the transcribed voice note or WhatsApp message)');
+
+    const growers = await query<any>('SELECT id, name, grower_code, phone FROM tea_growers WHERE tenant_id=$1 AND is_active=TRUE', [tenantId]);
+    const growerList = growers.map((g: any) => `${g.name} (code ${g.grower_code || 'n/a'})`).join(', ');
+
+    const prompt = `You parse a tea-factory clerk's voice note or WhatsApp message (Tamil or English, often mixed) into a structured leaf intake draft.
+Known growers at this factory: ${growerList || '(none registered yet)'}.
+Message: "${text.trim()}"
+
+Return ONLY a JSON object, no markdown fences, shaped exactly like:
+{"grower_name": "best-matching grower name or null if unclear", "gross_weight_kg": number or null, "grade": "A"|"B"|"C"|null, "confidence": "high"|"medium"|"low", "notes": "anything ambiguous the clerk should double-check"}`;
+
+    const raw = await askClaude('tea_parse_intake', prompt, tenantId);
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    let draft: any;
+    try { draft = JSON.parse(cleaned); } catch { return fail(res, 'AI returned an unparseable response — please try again or enter manually'); }
+
+    // Resolve to an actual grower_id if the name plausibly matches one on file
+    let matchedGrower = null;
+    if (draft.grower_name) {
+      matchedGrower = growers.find((g: any) =>
+        g.name.toLowerCase().includes(String(draft.grower_name).toLowerCase()) ||
+        String(draft.grower_name).toLowerCase().includes(g.name.toLowerCase())
+      ) || null;
+    }
+
+    ok(res, { ...draft, matched_grower_id: matchedGrower?.id || null, matched_grower_name: matchedGrower?.name || null });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Plain-language grower payment summary + weight/grade anomaly flagging —
+// spec's #2 AI feature. Compares this settlement to the grower's own
+// trailing average, not a factory-wide average, since land size/cycle
+// varies a lot grower to grower.
+teaRouter.post('/ai/payment-summary/:growerId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, growerId } = req.params as any;
+    const { settlement_id } = req.body;
+
+    const grower = await queryOne<any>('SELECT * FROM tea_growers WHERE id=$1 AND tenant_id=$2', [growerId, tenantId]);
+    if (!grower) return fail(res, 'Grower not found', 404);
+
+    const settlement = settlement_id
+      ? await queryOne<any>('SELECT * FROM tea_grower_settlements WHERE id=$1 AND tenant_id=$2 AND grower_id=$3', [settlement_id, tenantId, growerId])
+      : await queryOne<any>('SELECT * FROM tea_grower_settlements WHERE tenant_id=$1 AND grower_id=$2 ORDER BY week_end_date DESC LIMIT 1', [tenantId, growerId]);
+    if (!settlement) return fail(res, 'No settlement found for this grower');
+
+    const history = await query<any>(
+      `SELECT total_kg, gross_amount FROM tea_grower_settlements
+       WHERE tenant_id=$1 AND grower_id=$2 AND id != $3 ORDER BY week_end_date DESC LIMIT 8`,
+      [tenantId, growerId, settlement.id]
+    );
+    const avgKg = history.length ? history.reduce((a: number, h: any) => a + parseFloat(h.total_kg), 0) / history.length : parseFloat(settlement.total_kg);
+    const deviationPct = avgKg ? Math.round(((parseFloat(settlement.total_kg) - avgKg) / avgKg) * 100) : 0;
+    const anomaly = Math.abs(deviationPct) >= 30 && history.length >= 2;
+
+    const prompt = `Write a short, warm, plain-language payment summary for a tea grower, suitable for sending on WhatsApp. Tamil-English mix is fine if natural, but keep it simple and readable.
+Grower: ${grower.name}
+This period: ${settlement.total_kg} kg, gross ₹${settlement.gross_amount}, advance deducted ₹${settlement.advance_deduction || 0}, net payable ₹${settlement.net_payable}.
+Their typical weekly average: ${Math.round(avgKg)} kg.
+${anomaly ? `This period is ${deviationPct > 0 ? 'well above' : 'well below'} their usual average (${deviationPct}% ${deviationPct > 0 ? 'higher' : 'lower'}) — mention this gently and ask them to confirm it looks right.` : ''}
+Keep it under 80 words. End with the net payable amount clearly stated.`;
+
+    const summary = await askClaude('tea_payment_summary', prompt, tenantId, 300);
+
+    ok(res, {
+      summary: summary.trim(),
+      anomaly, deviation_pct: deviationPct, avg_weekly_kg: Math.round(avgKg),
+      settlement,
+    });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Send the AI-generated summary straight to the grower's WhatsApp —
+// separate step from generating it, so the owner/clerk can read it first.
+teaRouter.post('/ai/payment-summary/:growerId/send', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, growerId } = req.params as any;
+    const { summary } = req.body;
+    if (!summary?.trim()) return fail(res, 'summary required');
+    const grower = await queryOne<any>('SELECT phone FROM tea_growers WHERE id=$1 AND tenant_id=$2', [growerId, tenantId]);
+    if (!grower?.phone) return fail(res, 'Grower has no phone number on file');
+    const result = await sendWhatsAppText(normalizeWhatsAppPhone(grower.phone), summary.trim());
+    ok(res, { sent: result.sent, skipped: result.skipped || false, error: result.error });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Owner conversational assistant ("how did today go?") — spec's #4 AI
+// feature. Builds a same-shape context object as /dashboard so the
+// narrative and the numbers on screen never disagree.
+teaRouter.post('/ai/assistant', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { question } = req.body;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [todayStats] = await query<any>(
+      `SELECT COALESCE(SUM(tc.net_weight),0) AS kg, COUNT(DISTINCT tc.grower_id)::int AS growers
+       FROM tea_collection_batches b LEFT JOIN tea_collections tc ON tc.batch_id=b.id
+       WHERE b.tenant_id=$1 AND b.collection_date=$2`,
+      [tenantId, today]
+    );
+    const [pendingPay] = await query<any>(
+      `SELECT COALESCE(SUM(net_payable),0) AS amount FROM tea_grower_settlements WHERE tenant_id=$1 AND paid=FALSE`,
+      [tenantId]
+    );
+    const [dispatchToday] = await query<any>(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_kg),0) AS kg FROM tea_dispatches WHERE tenant_id=$1 AND dispatch_date=$2`,
+      [tenantId, today]
+    );
+    const openTickets = await queryOne<any>(
+      `SELECT COUNT(*)::int AS count FROM tea_maintenance_tickets WHERE tenant_id=$1 AND status != 'closed'`,
+      [tenantId]
+    );
+    const overdueCompliance = await queryOne<any>(
+      `SELECT COUNT(*)::int AS count FROM tea_facilities WHERE tenant_id=$1 AND renewal_date < CURRENT_DATE`,
+      [tenantId]
+    );
+
+    const context = {
+      today_kg: parseFloat(todayStats?.kg || 0),
+      today_growers: todayStats?.growers || 0,
+      pending_grower_payments: parseFloat(pendingPay?.amount || 0),
+      dispatches_today: dispatchToday?.count || 0,
+      dispatched_kg_today: parseFloat(dispatchToday?.kg || 0),
+      open_maintenance_tickets: openTickets?.count || 0,
+      overdue_compliance_items: overdueCompliance?.count || 0,
+    };
+
+    const prompt = `You are a tea factory's owner-facing assistant. Answer the owner's question in plain, direct language (2-4 sentences), using ONLY the data given below — don't invent numbers.
+Today's data: ${JSON.stringify(context)}
+Owner's question: "${question?.trim() || "How did today go?"}"`;
+
+    const answer = await askClaude('tea_owner_assistant', prompt, tenantId, 400);
+    ok(res, { answer: answer.trim(), context });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Vendor quote comparison — "best value, not just lowest price" (spec's
+// #5 AI feature). Marks the AI's pick on tea_vendor_quotes.ai_recommended
+// so the frontend can highlight it without re-deriving the same logic.
+teaRouter.post('/ai/vendor-recommendation/:ticketId', requireRole('superadmin', 'owner', 'manager', 'maintenance'), async (req, res) => {
+  try {
+    const { tenantId, ticketId } = req.params as any;
+    const quotes = await query<any>(
+      `SELECT q.*, v.name AS vendor_name FROM tea_vendor_quotes q JOIN tea_vendors v ON v.id=q.vendor_id WHERE q.ticket_id=$1`,
+      [ticketId]
+    );
+    if (!quotes.length) return fail(res, 'No quotes yet for this ticket');
+    if (quotes.length === 1) {
+      await query(`UPDATE tea_vendor_quotes SET ai_recommended=TRUE WHERE id=$1`, [quotes[0].id]);
+      return ok(res, { recommended_quote_id: quotes[0].id, reasoning: 'Only one quote received.' });
+    }
+
+    const prompt = `Compare these repair/maintenance vendor quotes and pick the best VALUE (not necessarily lowest price — consider delivery time too). Quotes:
+${quotes.map((q: any, idx: number) => `${idx + 1}. ${q.vendor_name}: ₹${q.amount}, ${q.delivery_days ?? 'unknown'} days delivery`).join('\n')}
+
+Return ONLY JSON: {"best_index": <1-based number from the list above>, "reasoning": "one short sentence"}`;
+
+    const raw = await askClaude('tea_vendor_recommendation', prompt, tenantId, 200);
+    const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    const bestQuote = quotes[parsed.best_index - 1] || quotes[0];
+
+    await query(`UPDATE tea_vendor_quotes SET ai_recommended=FALSE WHERE ticket_id=$1`, [ticketId]);
+    await query(`UPDATE tea_vendor_quotes SET ai_recommended=TRUE WHERE id=$1`, [bestQuote.id]);
+
+    ok(res, { recommended_quote_id: bestQuote.id, vendor_name: bestQuote.vendor_name, reasoning: parsed.reasoning });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Predictive maintenance nudges (spec's #6) — simple, honest heuristic:
+// flag machines not serviced in >180 days or already needs_service, rather
+// than claiming a real ML prediction with no training data behind it yet.
+teaRouter.get('/ai/maintenance-nudges', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT id, name, type, last_service_date, status,
+              CASE WHEN last_service_date IS NULL THEN NULL ELSE (CURRENT_DATE - last_service_date) END AS days_since_service
+       FROM tea_machines
+       WHERE tenant_id=$1 AND (status='needs_service' OR last_service_date IS NULL OR last_service_date < CURRENT_DATE - 180)
+       ORDER BY days_since_service DESC NULLS FIRST`,
+      [tenantId]
+    );
+    ok(res, rows.map((r: any) => ({
+      ...r,
+      nudge: r.status === 'needs_service'
+        ? `${r.name} already has an open service need — raise a ticket if you haven't.`
+        : r.days_since_service
+          ? `${r.name} hasn't been serviced in ${r.days_since_service} days — consider a checkup.`
+          : `${r.name} has no service history on record — worth an initial inspection.`,
+    })));
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Fuel consumption anomaly detection (spec's #7) — batch/day using
+// noticeably more fuel per kg of green leaf than the trailing average.
+teaRouter.get('/ai/fuel-anomalies', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT fc.id, fc.consumption_date, fc.quantity_used, fc.unit, fc.batch_id, b.total_kg AS green_leaf_kg,
+              CASE WHEN b.total_kg > 0 THEN fc.quantity_used / b.total_kg ELSE NULL END AS fuel_per_kg
+       FROM tea_fuel_consumption fc LEFT JOIN tea_collection_batches b ON b.id = fc.batch_id
+       WHERE fc.tenant_id=$1 AND fc.consumption_date >= CURRENT_DATE - 60
+       ORDER BY fc.consumption_date DESC`,
+      [tenantId]
+    );
+    const withRatio = rows.filter((r: any) => r.fuel_per_kg != null);
+    const avgRatio = withRatio.length ? withRatio.reduce((a: number, r: any) => a + parseFloat(r.fuel_per_kg), 0) / withRatio.length : 0;
+    const anomalies = withRatio
+      .filter((r: any) => avgRatio > 0 && parseFloat(r.fuel_per_kg) > avgRatio * 1.3)
+      .map((r: any) => ({ ...r, avg_fuel_per_kg: Math.round(avgRatio * 1000) / 1000, pct_above_avg: Math.round(((parseFloat(r.fuel_per_kg) - avgRatio) / avgRatio) * 100) }));
+    ok(res, { average_fuel_per_kg: Math.round(avgRatio * 1000) / 1000, anomalies });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Budget alert (spec's #14) — flags month-over-month cost-center spend
+// jumps (fuel, payroll, vendor) rather than requiring a separately
+// configured budget limit up front, since most small factories don't have
+// one set yet; a >25% month-over-month jump is a reasonable default signal.
+teaRouter.get('/ai/budget-alerts', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const centers = await query<any>(
+      `WITH months AS (
+         SELECT 'fuel' AS center, DATE_TRUNC('month', consumption_date) AS month, SUM(cost) AS amount
+           FROM tea_fuel_consumption WHERE tenant_id=$1 GROUP BY 1, 2
+         UNION ALL
+         SELECT 'payroll', DATE_TRUNC('month', period_end), SUM(net_pay)
+           FROM tea_payroll_runs WHERE tenant_id=$1 GROUP BY 1, 2
+         UNION ALL
+         SELECT 'vendor_spend', DATE_TRUNC('month', closed_at), SUM(cost)
+           FROM tea_maintenance_tickets WHERE tenant_id=$1 AND closed_at IS NOT NULL GROUP BY 1, 2
+       )
+       SELECT center,
+              MAX(amount) FILTER (WHERE month = DATE_TRUNC('month', CURRENT_DATE)) AS this_month,
+              MAX(amount) FILTER (WHERE month = DATE_TRUNC('month', CURRENT_DATE - INTERVAL '1 month')) AS last_month
+       FROM months GROUP BY center`,
+      [tenantId]
+    );
+    const alerts = centers
+      .map((c: any) => {
+        const thisM = parseFloat(c.this_month || 0);
+        const lastM = parseFloat(c.last_month || 0);
+        const pctChange = lastM > 0 ? Math.round(((thisM - lastM) / lastM) * 100) : null;
+        return { center: c.center, this_month: thisM, last_month: lastM, pct_change: pctChange };
+      })
+      .filter((c: any) => c.pct_change !== null && c.pct_change >= 25);
+    ok(res, alerts);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Farmer comparison (spec's #13) — ranks growers by volume, grade
+// consistency, and drop-off reliability, in plain language.
+teaRouter.get('/ai/farmer-comparison', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+
+    const rows = await query<any>(
+      `SELECT g.id, g.name, g.grower_code,
+              COALESCE(SUM(tc.net_weight), 0) AS total_kg,
+              COUNT(*)::int AS drop_offs,
+              ROUND(100.0 * COUNT(*) FILTER (WHERE tc.grade='A') / NULLIF(COUNT(*), 0), 1) AS grade_a_pct,
+              g.pluck_cycle_days,
+              CASE WHEN g.last_pluck_date IS NOT NULL THEN (CURRENT_DATE - g.last_pluck_date) ELSE NULL END AS days_since_last_pluck
+       FROM tea_growers g
+       LEFT JOIN tea_collections tc ON tc.grower_id = g.id
+       LEFT JOIN tea_collection_batches b ON b.id = tc.batch_id AND b.collection_date BETWEEN $2 AND $3
+       WHERE g.tenant_id=$1 AND g.is_active=TRUE
+       GROUP BY g.id, g.name, g.grower_code, g.pluck_cycle_days, g.last_pluck_date
+       ORDER BY total_kg DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows.map((r: any, idx: number) => ({ ...r, rank: idx + 1 })));
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Compliance renewal alerts, ranked by urgency (spec's #15) — thin AI
+// wrapper over /compliance/calendar that turns the raw list into a
+// one-paragraph daily-summary-ready narrative.
+teaRouter.get('/ai/compliance-alerts', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT 'vehicle' AS source, vm.type, vm.due_date AS date, tv.vehicle_number AS label,
+              CASE WHEN vm.due_date < CURRENT_DATE THEN 'overdue' ELSE 'due_soon' END AS status
+       FROM tea_vehicle_maintenance vm JOIN tea_vehicles tv ON tv.id=vm.vehicle_id
+       WHERE vm.tenant_id=$1 AND vm.due_date IS NOT NULL AND vm.due_date <= CURRENT_DATE + 30
+       UNION ALL
+       SELECT 'machine', mc.type, mc.due_date, m.name,
+              CASE WHEN mc.due_date < CURRENT_DATE THEN 'overdue' ELSE 'due_soon' END
+       FROM tea_machine_compliance mc JOIN tea_machines m ON m.id=mc.machine_id
+       WHERE mc.tenant_id=$1 AND mc.due_date IS NOT NULL AND mc.due_date <= CURRENT_DATE + 30
+       UNION ALL
+       SELECT 'facility', f.type, f.renewal_date, f.name,
+              CASE WHEN f.renewal_date < CURRENT_DATE THEN 'overdue' ELSE 'due_soon' END
+       FROM tea_facilities f
+       WHERE f.tenant_id=$1 AND f.renewal_date IS NOT NULL AND f.renewal_date <= CURRENT_DATE + 30
+       ORDER BY status, date`,
+      [tenantId]
+    );
+    if (!rows.length) return ok(res, { items: [], summary: 'Nothing due for renewal in the next 30 days.' });
+
+    const prompt = `Summarize these upcoming compliance renewals for a tea factory owner in one short paragraph, most urgent first:
+${rows.map((r: any) => `${r.label} — ${r.type} (${r.source}) — ${r.status === 'overdue' ? 'OVERDUE' : 'due'} ${r.date}`).join('\n')}`;
+    const summary = await askClaude('tea_compliance_alerts', prompt, tenantId, 250);
+    ok(res, { items: rows, summary: summary.trim() });
   } catch (e: any) { fail(res, e.message, 500); }
 });
