@@ -74,6 +74,32 @@ teaRouter.post('/grower-login', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
+// ── Public: grower phone-only login — before authMiddleware ──
+// A grower's "identity" here is just the phone number an Agent or the
+// Factory already entered on their tea_growers record (see POST
+// /growers above) — matching the same reliability-first tradeoff
+// already used for SafeRide360 guardians: no PIN/OTP step, since the
+// gate is "did staff already add this phone number," not "can this
+// person prove phone ownership." Issues the same grower_portal token
+// shape as /grower-login above, so every /grower-portal/* route works
+// unchanged regardless of which login path was used.
+teaRouter.post('/grower-auth/login', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { phone } = req.body;
+    if (!phone?.trim()) return fail(res, 'phone is required');
+
+    const grower = await queryOne<any>(
+      `SELECT * FROM tea_growers WHERE tenant_id=$1 AND phone=$2 AND is_active=TRUE`,
+      [tenantId, phone.trim()]
+    );
+    if (!grower) return fail(res, 'This number is not linked to any grower here — ask your factory or agent to add you first.', 404);
+
+    const token = signJwt({ role: 'grower_portal', growerId: grower.id, tenantId }, '24h');
+    ok(res, { token, grower: { id: grower.id, name: grower.name, phone: grower.phone } });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
 teaRouter.use(authMiddleware);
 teaRouter.use(requireTenantAccess());
 
