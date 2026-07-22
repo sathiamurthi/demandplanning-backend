@@ -3668,5 +3668,37 @@ END $$;
         ON CONFLICT (id) DO NOTHING;
       `
     },
+    {
+      // Purchase-order line items priced GST additively (total = base *
+      // (1 + gst%)), inflating the payable amount above the item's actual
+      // selling price. Re-derive the three generated columns so unit_price
+      // is treated as GST-INCLUSIVE instead: total stays exactly
+      // quantity*unit_price (never inflated), and subtotal/gst_amount are
+      // a compliance-reporting split OF that fixed total, not additions
+      // to it. Drops+re-adds only the generated columns — quantity/
+      // unit_price/gst_rate (the real data) are untouched, so no PO
+      // history is lost.
+      name: '096_po_items_gst_inclusive',
+      sql: `
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS total;
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS gst_amount;
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS subtotal;
+        ALTER TABLE purchase_order_items ADD COLUMN subtotal DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price / (1 + gst_rate/100)) STORED;
+        ALTER TABLE purchase_order_items ADD COLUMN gst_amount DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price - quantity * unit_price / (1 + gst_rate/100)) STORED;
+        ALTER TABLE purchase_order_items ADD COLUMN total DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price) STORED;
+      `
+    },
+    {
+      // Pharmacy (and any store) drug/trade license number — captured once
+      // per store and printed on bills, alongside the existing gst_number.
+      name: '097_stores_drug_license',
+      sql: `
+        ALTER TABLE stores ADD COLUMN IF NOT EXISTS drug_license_number VARCHAR(50);
+        ALTER TABLE stores ADD COLUMN IF NOT EXISTS drug_license_expiry DATE;
+      `
+    },
   ];
 }

@@ -6,7 +6,7 @@ import bcrypt from "bcryptjs";
 import slugify from "slugify";
 import { sendWelcomeEmail } from "../../utils/email";
 import { sendRegistrationWhatsApp } from "../../utils/whatsapp";
-import { categoriesMap } from "../../config/default_categories";
+import { categoriesMap, resolveCategoryKey } from "../../config/default_categories";
 
 export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTenantCommand, any> {
   async execute(command: RegisterTenantCommand) {
@@ -43,7 +43,7 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
     }
 
     const industryConfig = await queryOne<any>(
-      `SELECT id FROM industry_configs WHERE industry_id=$1 OR id::text=$1 LIMIT 1`,
+      `SELECT id, industry_id FROM industry_configs WHERE industry_id=$1 OR id::text=$1 LIMIT 1`,
       [industry_id]
     );
 
@@ -82,13 +82,11 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
       );
       const user = userRes.rows[0];
 
-      const resolvedIndustry = (industry_id || "").toLowerCase();
-      let industryKey = "retail";
-      if (resolvedIndustry.includes("pharma")) industryKey = "pharma";
-      else if (resolvedIndustry.includes("grocery") || resolvedIndustry.includes("kirana")) industryKey = "grocery";
-      else if (resolvedIndustry.includes("auto") || resolvedIndustry.includes("parts")) industryKey = "auto";
-
-
+      // Use the DB-resolved industry slug (industryConfig.industry_id), not the
+      // raw request value — the raw value can be a UUID or other non-slug shape
+      // depending on what the client sent, but industryConfig was already looked
+      // up above by matching either the slug or the UUID, so it's authoritative.
+      const industryKey = resolveCategoryKey(industryConfig?.industry_id);
 
       const defaultCategories = categoriesMap[industryKey] || [
         { name: "General", code: "GENERAL", desc: "Default category" }

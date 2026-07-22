@@ -9,7 +9,18 @@ import { queryBus, IQuery, IQueryHandler } from '../../cqrs/queryBus';
 import { authMiddleware } from '../auth/auth.service';
 import { requireMinRole } from '../../core/guards/roleGuard';
 import { requireTenantAccess } from '../../core/guards/roleGuard';
-import { categoriesMap } from '../../config/default_categories';
+import { categoriesMap, resolveCategoryKey, DefaultCategory } from '../../config/default_categories';
+
+async function seedCategories(tenantId: string, cats: DefaultCategory[]) {
+  for (let j = 0; j < cats.length; j++) {
+    const cat = cats[j];
+    await query(
+      `INSERT INTO categories (tenant_id, name, code, description, sort_order)
+       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
+      [tenantId, cat.name, cat.code, cat.desc, j]
+    );
+  }
+}
 
 function ok(res: any, data: any, status = 200) {
   res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
@@ -175,33 +186,34 @@ class ListCategoriesQueryHandler implements IQueryHandler<ListCategoriesQuery, a
     const childCountSql = `(SELECT COUNT(*)::int FROM categories WHERE parent_id=c.id AND is_active=TRUE) as child_count,`;
 
     const totalCount = await queryOne<any>(
-      "SELECT COUNT(*)::int as count FROM categories WHERE tenant_id=$1",
+      "SELECT COUNT(*)::int as count, COUNT(*) FILTER (WHERE code='GENERAL')::int as generic_count FROM categories WHERE tenant_id=$1",
       [q.tenantId]
     );
 
-    if (totalCount?.count === 0) {
+    // Re-seed when there are no categories at all, OR when the only category
+    // present is the old generic "General" fallback (a symptom of the
+    // industry not having been resolved correctly at registration time) —
+    // in that case a correct industry match should replace the placeholder.
+    const needsSeed = totalCount?.count === 0 || (totalCount?.count === 1 && totalCount?.generic_count === 1);
+
+    if (needsSeed) {
       const ind = await queryOne<any>(
-        `SELECT ic.industry_id 
+        `SELECT ic.industry_id
          FROM tenant_industries ti
          JOIN industry_configs ic ON ic.id = ti.industry_id
          WHERE ti.tenant_id = $1`,
         [q.tenantId]
       );
-      const industry = ind?.industry_id || "retail";
+      const industryKey = resolveCategoryKey(ind?.industry_id);
 
-
-
-      const defaultCategories = categoriesMap[industry] || [
-        { name: "General", code: "GENERAL", desc: "Default category" }
-      ];
-
-      for (let j = 0; j < defaultCategories.length; j++) {
-        const cat = defaultCategories[j];
-        await query(
-          `INSERT INTO categories (tenant_id, name, code, description, sort_order)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
-          [q.tenantId, cat.name, cat.code, cat.desc, j]
-        );
+      const defaultCategories = categoriesMap[industryKey];
+      if (defaultCategories) {
+        if (totalCount?.generic_count === 1) {
+          await query(`DELETE FROM categories WHERE tenant_id=$1 AND code='GENERAL'`, [q.tenantId]);
+        }
+        await seedCategories(q.tenantId, defaultCategories);
+      } else if (totalCount?.count === 0) {
+        await seedCategories(q.tenantId, [{ name: "General", code: "GENERAL", desc: "Default category" }]);
       }
     }
 

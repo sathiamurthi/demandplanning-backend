@@ -24,6 +24,7 @@ interface CreateStoreCommand extends ICommand {
   tenantId: string; name: string; code?: string; ownerName?: string;
   email?: string; phone?: string; address?: string; city?: string;
   state?: string; pincode?: string; gstNumber?: string;
+  drugLicenseNumber?: string; drugLicenseExpiry?: string;
 }
 class CreateStoreCommandHandler implements ICommandHandler<CreateStoreCommand> {
   async execute(cmd: CreateStoreCommand) {
@@ -38,10 +39,11 @@ class CreateStoreCommandHandler implements ICommandHandler<CreateStoreCommand> {
       if ((storeCount?.count || 0) >= tenant.max_stores) throw new Error(`Plan limit reached: max ${tenant.max_stores} stores`);
     }
     const [store] = await query<any>(
-      `INSERT INTO stores (tenant_id,name,code,owner_name,email,phone,address,city,state,pincode,gst_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO stores (tenant_id,name,code,owner_name,email,phone,address,city,state,pincode,gst_number,drug_license_number,drug_license_expiry)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [cmd.tenantId,cmd.name,cmd.code||null,cmd.ownerName||null,cmd.email||null,cmd.phone||null,
-       cmd.address||null,cmd.city||null,cmd.state||null,cmd.pincode||null,cmd.gstNumber||null]
+       cmd.address||null,cmd.city||null,cmd.state||null,cmd.pincode||null,cmd.gstNumber||null,
+       cmd.drugLicenseNumber||null,cmd.drugLicenseExpiry||null]
     );
     return store;
   }
@@ -52,6 +54,7 @@ interface UpdateStoreCommand extends ICommand {
   storeId: string; tenantId: string;
   name?: string; ownerName?: string; email?: string; phone?: string;
   address?: string; city?: string; state?: string; gstNumber?: string; isActive?: boolean;
+  drugLicenseNumber?: string; drugLicenseExpiry?: string;
 }
 class UpdateStoreCommandHandler implements ICommandHandler<UpdateStoreCommand> {
   async execute(cmd: UpdateStoreCommand) {
@@ -64,6 +67,8 @@ class UpdateStoreCommandHandler implements ICommandHandler<UpdateStoreCommand> {
     if (cmd.city !== undefined)      { sets.push(`city=$${i++}`);       vals.push(cmd.city); }
     if (cmd.state !== undefined)     { sets.push(`state=$${i++}`);      vals.push(cmd.state); }
     if (cmd.gstNumber !== undefined) { sets.push(`gst_number=$${i++}`); vals.push(cmd.gstNumber); }
+    if (cmd.drugLicenseNumber !== undefined) { sets.push(`drug_license_number=$${i++}`); vals.push(cmd.drugLicenseNumber); }
+    if (cmd.drugLicenseExpiry !== undefined) { sets.push(`drug_license_expiry=$${i++}`); vals.push(cmd.drugLicenseExpiry); }
     if (cmd.isActive !== undefined)  { sets.push(`is_active=$${i++}`);  vals.push(cmd.isActive); }
     sets.push(`updated_at=NOW()`);
     vals.push(cmd.storeId, cmd.tenantId);
@@ -139,6 +144,7 @@ const StoreCreateSchema = z.object({
   phone: z.string().optional(), address: z.string().optional(),
   city: z.string().optional(), state: z.string().optional(),
   pincode: z.string().optional(), gstNumber: z.string().optional(),
+  drugLicenseNumber: z.string().optional(), drugLicenseExpiry: z.string().optional(),
 });
 
 storeRouter.get("/", async (req, res) => {
