@@ -1,18 +1,6 @@
 // types/express.d.ts
 import "express";
-
-declare module "express-serve-static-core" {
-  interface Request {
-    user?: {
-      sub: string;
-      email: string;
-      role: string;
-      tenantId: string;
-      storeId?: string;
-      industryId?: string;
-    };
-  }
-}
+import { AuthPayload } from "./index";
 
 declare module "express-serve-static-core" {
   interface Request {

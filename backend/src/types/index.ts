@@ -20,6 +20,7 @@ export interface MJwtPayload extends JwtPayload {
   email: string;
   exp: number;
   sub: string;
+  teaRoleId?: string | null;
 }
 
 export interface AuthPayload {
@@ -29,7 +30,10 @@ export interface AuthPayload {
   tenantId?: string;
   storeId?: string;
   industryId?: string | null;
-  
+  // Custom TeaFactory360 role (tea_roles.id) — set only when the user was
+  // assigned a tenant-defined role like "Field Officer" rather than one of
+  // the fixed base roles. See requireTeaAccess() in tea-roles.service.ts.
+  teaRoleId?: string | null;
 }
 
 declare global {

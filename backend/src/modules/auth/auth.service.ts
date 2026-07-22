@@ -64,6 +64,7 @@ function generateTokens(user: any) {
     tenantId: user.tenant_id,
     storeId: user.store_id,
     industryId: user.industry_id ?? null,
+    teaRoleId: user.tea_role_id ?? null,
   };
 
   const accessToken = jwt.sign(payload, JWT_SECRET, signOptions);
@@ -102,7 +103,7 @@ class LoginCommandHandler {
 
     const user = await queryOne<any>(
       `SELECT u.id, u.email, u.phone, u.password_hash, u.tenant_id, u.role,
-              u.first_name, u.last_name, u.store_id,
+              u.first_name, u.last_name, u.store_id, u.tea_role_id,
               ic.industry_id
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -137,6 +138,7 @@ class LoginCommandHandler {
         tenantId: user.tenant_id,
         storeId: user.store_id,
         industryId: user.industry_id,
+        teaRoleId: user.tea_role_id,
       },
     };
   }
@@ -264,6 +266,7 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
       role:       decoded.role ?? "staff",
       storeId:    decoded.storeId,
       industryId: decoded.industryId,
+      teaRoleId:  decoded.teaRoleId ?? null,
     };
     next();
   } catch (err: any) {
@@ -381,7 +384,7 @@ authRouter.post("/refresh", async (req, res) => {
 
   try {
     const record = await queryOne<any>(
-      `SELECT rt.user_id, u.email, u.role, u.tenant_id, u.store_id, t.industry_id
+      `SELECT rt.user_id, u.email, u.role, u.tenant_id, u.store_id, u.tea_role_id, t.industry_id
        FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -398,6 +401,7 @@ authRouter.post("/refresh", async (req, res) => {
       tenantId: record.tenant_id,
       storeId: record.store_id,
       industryId: record.industry_id ?? null,
+      teaRoleId: record.tea_role_id ?? null,
     };
 
     const accessToken = jwt.sign(payload, JWT_SECRET, signOptions);

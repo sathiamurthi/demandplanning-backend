@@ -11,6 +11,7 @@ import { signJwt, verifyJwt } from '../../utils/jwtUtils';
 import { logAIUsage } from '../superadmin/ai-pipeline.service';
 import { sendWhatsAppText, normalizeWhatsAppPhone } from '../../utils/whatsapp';
 import { callAI } from '../../config/aiService';
+import { requireTeaAccess, registerTeaRoleRoutes } from './tea-roles.service';
 
 // Shared AI call helper for every TeaFactory360 AI feature below — goes
 // through the same callAI() fallback chain (Anthropic -> Gemini -> Azure
@@ -75,6 +76,46 @@ teaRouter.post('/grower-login', async (req, res) => {
 
 teaRouter.use(authMiddleware);
 teaRouter.use(requireTenantAccess());
+
+// ── Custom-role permission gates ────────────────────────────────
+// Additive only: a user with no custom tea role assigned sails through
+// unaffected (the per-route requireRole() calls below remain their sole
+// gate). Only users assigned a tenant-defined role (e.g. "Field
+// Officer") are actually checked against that role's permission grid.
+// Settings/dashboard/notifications are deliberately NOT gated here —
+// see the comment on TEA_MODULES in tea-roles.service.ts.
+teaRouter.use('/growers', requireTeaAccess('growers'));
+teaRouter.use('/rates', requireTeaAccess('growers'));
+teaRouter.use('/collections', requireTeaAccess('collections'));
+teaRouter.use('/dispatches', requireTeaAccess('dispatch'));
+teaRouter.use('/factories', requireTeaAccess('dispatch'));
+teaRouter.use('/settlements', requireTeaAccess('settlements'));
+teaRouter.use('/advances', requireTeaAccess('settlements'));
+teaRouter.use('/suppliers', requireTeaAccess('suppliers'));
+teaRouter.use('/supply-orders', requireTeaAccess('suppliers'));
+teaRouter.use('/fuel-consumption', requireTeaAccess('suppliers'));
+teaRouter.use('/vehicles', requireTeaAccess('fleet'));
+teaRouter.use('/vehicle-maintenance', requireTeaAccess('fleet'));
+teaRouter.use('/estate', requireTeaAccess('estate'));
+teaRouter.use('/payroll', requireTeaAccess('estate'));
+teaRouter.use('/worker-insurance', requireTeaAccess('estate'));
+teaRouter.use('/machines', requireTeaAccess('machinery'));
+teaRouter.use('/vendors', requireTeaAccess('machinery'));
+teaRouter.use('/maintenance-tickets', requireTeaAccess('machinery'));
+teaRouter.use('/stock-items', requireTeaAccess('inventory'));
+teaRouter.use('/indents', requireTeaAccess('inventory'));
+teaRouter.use('/buyers', requireTeaAccess('sales'));
+teaRouter.use('/auction-lots', requireTeaAccess('sales'));
+teaRouter.use('/sales', requireTeaAccess('sales'));
+teaRouter.use('/facilities', requireTeaAccess('compliance'));
+teaRouter.use('/facility-utilities', requireTeaAccess('compliance'));
+teaRouter.use('/compliance', requireTeaAccess('compliance'));
+teaRouter.use('/ai', requireTeaAccess('ai'));
+teaRouter.use('/reports', requireTeaAccess('reports'));
+
+// ── Custom roles + team management (owner/manager only, ungated by
+//    the module grid above so a delegated role can never touch it) ──
+registerTeaRoleRoutes(teaRouter);
 
 function ok(res: any, data: any, status = 200) {
   res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });

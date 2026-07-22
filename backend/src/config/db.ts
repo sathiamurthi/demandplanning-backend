@@ -3700,5 +3700,29 @@ END $$;
         ALTER TABLE stores ADD COLUMN IF NOT EXISTS drug_license_expiry DATE;
       `
     },
+    {
+      // Custom, tenant-defined roles for TeaFactory360 (e.g. "Field
+      // Officer") with a per-module permission grid — additive to, not a
+      // replacement of, the existing fixed user_role enum. A user keeps a
+      // base role (owner/manager/staff/agent) for coarse platform-wide
+      // gating, and can ALSO be assigned a tea_role_id whose `permissions`
+      // JSONB ({ moduleKey: boolean }) governs access to specific
+      // TeaFactory360 sections (growers, collections, dispatch, ...) — see
+      // requireTeaAccess() in tea-roles.service.ts. Nullable + ON DELETE
+      // SET NULL so deleting a role never breaks the user row.
+      name: '098_tea_custom_roles',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_roles (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(100) NOT NULL,
+          permissions JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(tenant_id, name)
+        );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS tea_role_id UUID REFERENCES tea_roles(id) ON DELETE SET NULL;
+      `
+    },
   ];
 }
