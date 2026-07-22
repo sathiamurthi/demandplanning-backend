@@ -50,12 +50,21 @@ export class RegisterTenantCommandHandler implements ICommandHandler<RegisterTen
     const resolvedEmail = emailNorm || `user_${Date.now()}@noemail.local`;
     const regType = phoneNorm && !emailNorm ? 'phone' : 'email';
 
+    // TeaFactory360 ("factory") signups need a superadmin to approve the
+    // new tenant before its owner can log in — everything else keeps
+    // auto-activating exactly as before. The existing login flow already
+    // checks tenants.is_active and rejects with 'Account is inactive', and
+    // the superadmin Tenants page already has a working Approve/Deactivate
+    // UI (built for this, just never triggered since nothing set this
+    // false before) — so this is the only line needed to wire it up.
+    const requiresApproval = industryConfig?.industry_id === 'tea';
+
     return withTransaction(async (client) => {
       const tenantRes = await client.query(
         `INSERT INTO tenants (name, plan_type, billing_status, slug, is_active, created_at, metadata)
-         VALUES ($1, 'free', 'active', $2, TRUE, NOW(), $3)
+         VALUES ($1, 'free', 'active', $2, $3, NOW(), $4)
          RETURNING id, name, plan_type, slug`,
-        [companyName, slug, JSON.stringify({ registration_source: source || 'app' })]
+        [companyName, slug, !requiresApproval, JSON.stringify({ registration_source: source || 'app' })]
       );
       const tenant = tenantRes.rows[0];
 

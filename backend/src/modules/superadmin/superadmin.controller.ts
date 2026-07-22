@@ -19,6 +19,8 @@ import {
   SendNotificationCommand,
   SendMessageCommand,
   ManageSubscriptionCommand,
+  ActivateUserCommand,
+  DeactivateUserCommand,
 } from "./superadmin.service";
 
 // Controller functions
@@ -53,6 +55,49 @@ export async function deactivateTenant(req: Request, res: Response) {
   }
 }
 
+// ── TeaFactory360 growers — cross-tenant oversight ──────────────────
+// Growers don't have their own account (their "login" is just a phone
+// number an Agent/Factory already put on file — see grower-auth/login),
+// so there's nothing to "approve" per se; is_active is the one lever
+// that controls whether that phone number can still sign in.
+export async function listTeaGrowers(req: Request, res: Response) {
+  try {
+    const rows = await dbQuery<any>(
+      `SELECT g.id, g.name, g.grower_code, g.phone, g.is_active, g.created_at,
+              t.id AS tenant_id, t.name AS tenant_name
+       FROM tea_growers g
+       JOIN tenants t ON t.id = g.tenant_id
+       ORDER BY g.created_at DESC
+       LIMIT 500`
+    );
+    res.json({ success: true, data: rows });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function activateTeaGrower(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const rows = await dbQuery<any>(`UPDATE tea_growers SET is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+    if (!rows.length) { res.status(404).json({ success: false, error: "Grower not found" }); return; }
+    res.json({ success: true, data: { activated: true } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deactivateTeaGrower(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const rows = await dbQuery<any>(`UPDATE tea_growers SET is_active=FALSE, updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+    if (!rows.length) { res.status(404).json({ success: false, error: "Grower not found" }); return; }
+    res.json({ success: true, data: { deactivated: true } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
 export async function getUsers(req: Request, res: Response) {
   try {
     const result = await queryBus.execute<GetUsersQuery>({
@@ -61,6 +106,35 @@ export async function getUsers(req: Request, res: Response) {
     res.json({ success: true, data: result });
   } catch (err: any) {
     console.error("getUsers error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+// Approve a pending self-registration (e.g. a TeaFactory360 agent) or
+// re-enable a previously deactivated account — same underlying flag
+// (users.is_active), covers both cases.
+export async function activateUser(req: Request, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const result = await commandBus.execute<ActivateUserCommand>({
+      type: "superadmin.user.activate",
+      userId: id,
+    });
+    res.json({ success: true, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+}
+
+export async function deactivateUser(req: Request, res: Response) {
+  try {
+    const id = req.params.id as string;
+    const result = await commandBus.execute<DeactivateUserCommand>({
+      type: "superadmin.user.deactivate",
+      userId: id,
+    });
+    res.json({ success: true, data: result });
+  } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 }
@@ -607,8 +681,14 @@ router.get("/tenants", getTenants);
 router.post("/tenants/approve/:id", approveTenant);
 router.post("/tenants/deactivate/:id", deactivateTenant);
 
+router.get("/tea/growers", listTeaGrowers);
+router.post("/tea/growers/:id/activate", activateTeaGrower);
+router.post("/tea/growers/:id/deactivate", deactivateTeaGrower);
+
 router.get("/users", getUsers);
 router.patch("/users/:id/password", changePassword);
+router.post("/users/:id/activate", activateUser);
+router.post("/users/:id/deactivate", deactivateUser);
 
 router.post("/notifications", sendNotification);
 router.post("/messages", sendMessage);

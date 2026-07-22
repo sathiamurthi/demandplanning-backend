@@ -1,7 +1,8 @@
-import { query } from "../../config/db";
+import { query, queryOne } from "../../config/db";
 import bcrypt from "bcrypt";
 import { commandBus, ICommand, ICommandHandler } from "../../cqrs/commandBus";
 import { queryBus, IQuery, IQueryHandler } from "../../cqrs/queryBus";
+import { categoriesMap, resolveCategoryKey } from "../../config/default_categories";
 
 // Utility
 export async function hashPassword(password: string): Promise<string> {
@@ -51,22 +52,32 @@ export class ApproveTenantCommandHandler implements ICommandHandler<ApproveTenan
       [c.tenantId]
     );
 
-    // Seed default categories if none exist yet
+    // Seed default categories if none exist yet — resolved from the
+    // tenant's actual linked industry (tea, pharma, grocery, auto, ...),
+    // not a hardcoded Pharma/Groceries/Parts set that made no sense for
+    // e.g. a newly-approved TeaFactory360 tenant.
     const existing = await query(
       `SELECT COUNT(*)::int AS cnt FROM categories WHERE tenant_id=$1`,
       [c.tenantId]
     );
     if ((existing[0] as any)?.cnt === 0) {
-      const defaults = [
-        { name: "Pharma",    code: "PHARMA",    desc: "Pharmaceutical & medicines" },
-        { name: "Groceries", code: "GROCERY",   desc: "General groceries & food items" },
-        { name: "Parts",     code: "PARTS",     desc: "Spare parts & components" },
+      const ind = await queryOne<any>(
+        `SELECT ic.industry_id
+         FROM tenant_industries ti
+         JOIN industry_configs ic ON ic.id = ti.industry_id
+         WHERE ti.tenant_id = $1`,
+        [c.tenantId]
+      );
+      const industryKey = resolveCategoryKey(ind?.industry_id);
+      const defaults = categoriesMap[industryKey] || [
+        { name: "General", code: "GENERAL", desc: "Default category" },
       ];
-      for (const cat of defaults) {
+      for (let i = 0; i < defaults.length; i++) {
+        const cat = defaults[i];
         await query(
           `INSERT INTO categories (tenant_id, name, code, description, sort_order)
            VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`,
-          [c.tenantId, cat.name, cat.code, cat.desc, defaults.indexOf(cat)]
+          [c.tenantId, cat.name, cat.code, cat.desc, i]
         );
       }
     }
@@ -202,7 +213,20 @@ export interface DeactivateUserCommand extends ICommand {
 export class DeactivateUserCommandHandler implements ICommandHandler<DeactivateUserCommand, any> {
   async execute(c: DeactivateUserCommand) {
     return query(
-      `UPDATE users SET status='inactive', updated_at=NOW() WHERE id=$1 RETURNING id, name, email, status`,
+      `UPDATE users SET is_active=FALSE, updated_at=NOW() WHERE id=$1 RETURNING id, first_name, last_name, email, is_active`,
+      [c.userId]
+    );
+  }
+}
+
+export interface ActivateUserCommand extends ICommand {
+  readonly type: "superadmin.user.activate";
+  userId: string;
+}
+export class ActivateUserCommandHandler implements ICommandHandler<ActivateUserCommand, any> {
+  async execute(c: ActivateUserCommand) {
+    return query(
+      `UPDATE users SET is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING id, first_name, last_name, email, is_active`,
       [c.userId]
     );
   }
@@ -236,4 +260,5 @@ commandBus.register("superadmin.subscription.manage", new ManageSubscriptionComm
 commandBus.register("superadmin.user.create", new CreateUserCommandHandler());
 commandBus.register("superadmin.user.role.update", new UpdateUserRoleCommandHandler());
 commandBus.register("superadmin.user.deactivate", new DeactivateUserCommandHandler());
+commandBus.register("superadmin.user.activate", new ActivateUserCommandHandler());
 commandBus.register("superadmin.user.delete", new DeleteUserCommandHandler());
