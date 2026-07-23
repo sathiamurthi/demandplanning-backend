@@ -3724,5 +3724,22 @@ END $$;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS tea_role_id UUID REFERENCES tea_roles(id) ON DELETE SET NULL;
       `
     },
+    {
+      // Estate/Factory org structure — tea_estate_workers previously only
+      // modeled the estate (field) side with a tiny 4-value role list.
+      // Adds: department (estate|factory, so the SAME table can also hold
+      // factory production staff — Tea Maker, Withering In-charge, etc.,
+      // per the real org chart), and reports_to_id for the manager
+      // hierarchy (Estate Manager -> Assistant Manager -> Field Officer ->
+      // ... ). role is widened to fit the real job titles from
+      // config/tea-org-roles.ts (e.g. "assistant_factory_mgr").
+      name: '099_tea_estate_org_structure',
+      sql: `
+        ALTER TABLE tea_estate_workers ALTER COLUMN role TYPE VARCHAR(60);
+        ALTER TABLE tea_estate_workers ADD COLUMN IF NOT EXISTS department VARCHAR(20) NOT NULL DEFAULT 'estate';
+        ALTER TABLE tea_estate_workers ADD COLUMN IF NOT EXISTS reports_to_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_tea_estate_workers_department ON tea_estate_workers(tenant_id, department);
+      `
+    },
   ];
 }

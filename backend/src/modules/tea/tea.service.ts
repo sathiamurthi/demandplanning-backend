@@ -12,6 +12,7 @@ import { logAIUsage } from '../superadmin/ai-pipeline.service';
 import { sendWhatsAppText, normalizeWhatsAppPhone } from '../../utils/whatsapp';
 import { callAI } from '../../config/aiService';
 import { requireTeaAccess, registerTeaRoleRoutes } from './tea-roles.service';
+import { ESTATE_ROLES, FACTORY_ROLES, EMPLOYMENT_TYPES } from '../../config/tea-org-roles';
 
 // Shared AI call helper for every TeaFactory360 AI feature below — goes
 // through the same callAI() fallback chain (Anthropic -> Gemini -> Azure
@@ -1861,15 +1862,23 @@ teaRouter.post('/estate/plots', requireRole('superadmin', 'owner', 'manager'), a
   } catch (e: any) { fail(res, e.message); }
 });
 
+teaRouter.get('/estate/roles-catalog', async (_req, res) => {
+  ok(res, { estate: ESTATE_ROLES, factory: FACTORY_ROLES, employmentTypes: EMPLOYMENT_TYPES });
+});
+
 teaRouter.get('/estate/workers', async (req, res) => {
   try {
     const { tenantId } = req.params as any;
-    const { plot_id, role } = req.query as any;
+    const { plot_id, role, department } = req.query as any;
     const conds = ['w.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
     if (plot_id) { conds.push(`w.plot_id=$${i++}`); vals.push(plot_id); }
     if (role) { conds.push(`w.role=$${i++}`); vals.push(role); }
+    if (department) { conds.push(`w.department=$${i++}`); vals.push(department); }
     const rows = await query<any>(
-      `SELECT w.*, p.name AS plot_name FROM tea_estate_workers w LEFT JOIN tea_estate_plots p ON p.id=w.plot_id
+      `SELECT w.*, p.name AS plot_name, r.name AS reports_to_name
+       FROM tea_estate_workers w
+       LEFT JOIN tea_estate_plots p ON p.id=w.plot_id
+       LEFT JOIN tea_estate_workers r ON r.id=w.reports_to_id
        WHERE ${conds.join(' AND ')} ORDER BY w.name`,
       vals
     );
@@ -1880,12 +1889,12 @@ teaRouter.get('/estate/workers', async (req, res) => {
 teaRouter.post('/estate/workers', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
-    const { name, phone, role = 'other', employment_type = 'permanent', plot_id, daily_wage = 0 } = req.body;
+    const { name, phone, role = 'other', department = 'estate', employment_type = 'permanent', plot_id, reports_to_id, daily_wage = 0 } = req.body;
     if (!name) return fail(res, 'name required');
     const [w] = await query<any>(
-      `INSERT INTO tea_estate_workers (tenant_id, name, phone, role, employment_type, plot_id, daily_wage)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [tenantId, name, phone || null, role, employment_type, plot_id || null, daily_wage]
+      `INSERT INTO tea_estate_workers (tenant_id, name, phone, role, department, employment_type, plot_id, reports_to_id, daily_wage)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [tenantId, name, phone || null, role, department, employment_type, plot_id || null, reports_to_id || null, daily_wage]
     );
     ok(res, w, 201);
   } catch (e: any) { fail(res, e.message); }
@@ -1894,13 +1903,15 @@ teaRouter.post('/estate/workers', requireRole('superadmin', 'owner', 'manager', 
 teaRouter.put('/estate/workers/:workerId', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
   try {
     const { tenantId, workerId } = req.params as any;
-    const { name, phone, role, employment_type, plot_id, daily_wage, is_active } = req.body;
+    const { name, phone, role, department, employment_type, plot_id, reports_to_id, daily_wage, is_active } = req.body;
     const sets: string[] = []; const vals: any[] = []; let i = 1;
     if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
     if (phone !== undefined) { sets.push(`phone=$${i++}`); vals.push(phone); }
     if (role !== undefined) { sets.push(`role=$${i++}`); vals.push(role); }
+    if (department !== undefined) { sets.push(`department=$${i++}`); vals.push(department); }
     if (employment_type !== undefined) { sets.push(`employment_type=$${i++}`); vals.push(employment_type); }
     if (plot_id !== undefined) { sets.push(`plot_id=$${i++}`); vals.push(plot_id); }
+    if (reports_to_id !== undefined) { sets.push(`reports_to_id=$${i++}`); vals.push(reports_to_id); }
     if (daily_wage !== undefined) { sets.push(`daily_wage=$${i++}`); vals.push(daily_wage); }
     if (is_active !== undefined) { sets.push(`is_active=$${i++}`); vals.push(is_active); }
     if (!sets.length) return fail(res, 'No fields to update');
