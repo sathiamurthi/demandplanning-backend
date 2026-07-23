@@ -3148,3 +3148,24 @@ teaRouter.get('/notifications', async (req, res) => {
     ok(res, items);
   } catch (e: any) { fail(res, e.message, 500); }
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// TEAFACTORY360 — DATA BACKUP / EXPORT
+// ════════════════════════════════════════════════════════════════════════
+
+teaRouter.get('/backup/export', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const tables = await query<{ table_name: string }>(
+      `SELECT DISTINCT table_name FROM information_schema.columns
+       WHERE table_schema='public' AND column_name='tenant_id' AND table_name LIKE 'tea_%'
+       ORDER BY table_name`
+    );
+    const data: Record<string, any[]> = {};
+    for (const t of tables) {
+      data[t.table_name] = await query<any>(`SELECT * FROM ${t.table_name} WHERE tenant_id=$1`, [tenantId]);
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="teafactory360-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+    ok(res, { exported_at: new Date().toISOString(), tenant_id: tenantId, tables: data });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
