@@ -16,6 +16,7 @@ import { logger } from '../../config/logger';
 import Anthropic from '@anthropic-ai/sdk';
 import { callGemini } from '../auth/gemini.service';
 import { runSafeRide360RetentionJob, runSafeRide360LocationUpdateJob } from '../saferide360/saferide360.router';
+import { runTeaDailyDigestJob, runTeaWeeklyGrowerPaymentJob } from '../tea/tea-jobs.service';
 
 // ── Constants ─────────────────────────────────────────────────
 const ACTIVE_WINDOW_MIN  = 15;
@@ -586,13 +587,20 @@ export function startBackgroundServices() {
   setTimeout(runAIJob,       60_000); // AI job starts 1 min after boot
   setTimeout(runSafeRide360RetentionJob, 45_000);
   setTimeout(runSafeRide360LocationUpdateJob, 90_000);
+  setTimeout(runTeaDailyDigestJob, 15_000);
+  setTimeout(runTeaWeeklyGrowerPaymentJob, 20_000);
 
   setInterval(runDBJob,       DB_JOB_INTERVAL_MS);
   setInterval(runOverpassJob, OS_JOB_INTERVAL_MS);
   setInterval(runAIJob,       AI_JOB_INTERVAL_MS);
   setInterval(runSafeRide360RetentionJob, 6 * 60 * 60_000); // every 6 hours — a 2-day retention window doesn't need finer granularity
   setInterval(runSafeRide360LocationUpdateJob, 10 * 60_000); // every 10 min, matches the notification cadence itself
+  // Both tea jobs self-gate on IST hour/day-of-week + an atomic per-tenant
+  // claim row (tea_job_runs), so a 15-min tick just needs to land inside
+  // the target hour at least once — no need for minute-level precision.
+  setInterval(runTeaDailyDigestJob, 15 * 60_000);
+  setInterval(runTeaWeeklyGrowerPaymentJob, 15 * 60_000);
 
-  logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr, SafeRide360 location:10min)');
+  logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr, SafeRide360 location:10min, Tea digest/payment:15min-gated)');
 }
 

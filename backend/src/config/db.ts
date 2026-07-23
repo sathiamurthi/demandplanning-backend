@@ -3741,5 +3741,22 @@ END $$;
         CREATE INDEX IF NOT EXISTS idx_tea_estate_workers_department ON tea_estate_workers(tenant_id, department);
       `
     },
+    {
+      // Idempotency guard for scheduled background jobs (tea daily digest,
+      // weekly grower payment notice) — an atomic INSERT ... ON CONFLICT
+      // DO NOTHING per (job_key, tenant_id, run_key) means a job that ticks
+      // every N minutes only actually fires once per its real cadence,
+      // without needing a separate cron scheduler process.
+      name: '100_tea_job_runs',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_job_runs (
+          job_key VARCHAR(50) NOT NULL,
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          run_key VARCHAR(20) NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          PRIMARY KEY (job_key, tenant_id, run_key)
+        );
+      `
+    },
   ];
 }

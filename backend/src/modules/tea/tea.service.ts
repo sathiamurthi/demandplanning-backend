@@ -2182,6 +2182,11 @@ teaRouter.patch('/vehicles/:vehicleId/live', requireRole('superadmin', 'owner', 
   } catch (e: any) { fail(res, e.message); }
 });
 
+// Position pings older than this are flagged stale/idle — the vehicle's
+// phone has stopped broadcasting (dead battery, app closed, parked with
+// no driver update), not evidence it's still moving normally.
+const VEHICLE_STALE_MINUTES = 30;
+
 // All vehicles + their live position, for the map view. idle_minutes lets
 // the frontend/AI flag "idle vehicle" (spec AI feature #3) without a
 // separate polling job.
@@ -2190,7 +2195,8 @@ teaRouter.get('/vehicles/live', async (req, res) => {
     const { tenantId } = req.params as any;
     const rows = await query<any>(
       `SELECT id, vehicle_number, driver_name, driver_phone, live_lat, live_lng, live_updated_at,
-              EXTRACT(EPOCH FROM (NOW() - live_updated_at))/60 AS minutes_since_update
+              EXTRACT(EPOCH FROM (NOW() - live_updated_at))/60 AS minutes_since_update,
+              (live_updated_at IS NOT NULL AND NOW() - live_updated_at > INTERVAL '${VEHICLE_STALE_MINUTES} minutes') AS is_stale
        FROM tea_vehicles WHERE tenant_id=$1 AND is_active=TRUE ORDER BY vehicle_number`,
       [tenantId]
     );
@@ -2243,6 +2249,38 @@ teaRouter.get('/reports/production-yield', async (req, res) => {
        FROM tea_collection_batches
        WHERE tenant_id=$1 AND collection_date BETWEEN $2 AND $3
        ORDER BY collection_date DESC`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Batch profitability — revenue (tea_sale_transactions tied to this batch)
+// minus grower procurement cost (the batch's own total_amount, i.e. what
+// growers were paid for the leaf) minus fuel cost (tea_fuel_consumption
+// rows tied to this batch). All three already carry a real batch_id FK,
+// so this is a straight join, not an estimate.
+teaRouter.get('/reports/batch-profitability', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT b.id, b.collection_date, b.total_kg AS green_leaf_kg, b.made_tea_kg,
+              b.total_amount AS procurement_cost,
+              COALESCE(fuel.fuel_cost, 0) AS fuel_cost,
+              COALESCE(sales.revenue, 0) AS revenue,
+              COALESCE(sales.revenue, 0) - b.total_amount - COALESCE(fuel.fuel_cost, 0) AS profit
+       FROM tea_collection_batches b
+       LEFT JOIN (
+         SELECT batch_id, SUM(cost) AS fuel_cost FROM tea_fuel_consumption WHERE batch_id IS NOT NULL GROUP BY batch_id
+       ) fuel ON fuel.batch_id = b.id
+       LEFT JOIN (
+         SELECT batch_id, SUM(total_amount) AS revenue FROM tea_sale_transactions WHERE batch_id IS NOT NULL GROUP BY batch_id
+       ) sales ON sales.batch_id = b.id
+       WHERE b.tenant_id=$1 AND b.collection_date BETWEEN $2 AND $3
+       ORDER BY b.collection_date DESC`,
       [tenantId, dateFrom, dateTo]
     );
     ok(res, rows);
@@ -2664,6 +2702,42 @@ teaRouter.get('/reports/sales', async (req, res) => {
       [tenantId, dateFrom, dateTo]
     );
     ok(res, { by_channel: byChannel, auction_performance: auctionPerf });
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+// Vehicle performance report — fuel spend/liters, dispatch trips, and
+// current maintenance status per vehicle, so "how is this vehicle doing"
+// is one query instead of cross-referencing Settings, Fleet, and
+// Machinery separately.
+teaRouter.get('/reports/by-vehicle', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { from, to } = req.query as any;
+    const dateFrom = from || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateTo = to || new Date().toISOString().slice(0, 10);
+    const rows = await query<any>(
+      `SELECT v.id, v.vehicle_number, v.driver_name,
+              COALESCE(fuel.liters, 0) AS total_liters, COALESCE(fuel.cost, 0) AS total_fuel_cost,
+              COALESCE(disp.trips, 0) AS dispatch_trips, COALESCE(disp.kg, 0) AS dispatched_kg,
+              COALESCE(maint.overdue, 0) AS overdue_maintenance
+       FROM tea_vehicles v
+       LEFT JOIN (
+         SELECT vehicle_id, SUM(liters) AS liters, SUM(total_cost) AS cost
+         FROM tea_vehicle_fuel_logs WHERE log_date BETWEEN $2 AND $3 GROUP BY vehicle_id
+       ) fuel ON fuel.vehicle_id = v.id
+       LEFT JOIN (
+         SELECT vehicle_id, COUNT(*)::int AS trips, SUM(total_kg) AS kg
+         FROM tea_dispatches WHERE dispatch_date BETWEEN $2 AND $3 GROUP BY vehicle_id
+       ) disp ON disp.vehicle_id = v.id
+       LEFT JOIN (
+         SELECT vehicle_id, COUNT(*)::int AS overdue
+         FROM tea_vehicle_maintenance WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE GROUP BY vehicle_id
+       ) maint ON maint.vehicle_id = v.id
+       WHERE v.tenant_id=$1 AND v.is_active=TRUE
+       ORDER BY v.vehicle_number`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, rows);
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
@@ -3125,6 +3199,14 @@ teaRouter.get('/notifications', async (req, res) => {
        ORDER BY vm.due_date`,
       [tenantId]
     );
+    const staleVehicles = await query<any>(
+      `SELECT vehicle_number, EXTRACT(EPOCH FROM (NOW() - live_updated_at))/60 AS minutes_since_update
+       FROM tea_vehicles
+       WHERE tenant_id=$1 AND is_active=TRUE AND live_updated_at IS NOT NULL
+             AND NOW() - live_updated_at > INTERVAL '${VEHICLE_STALE_MINUTES} minutes'
+       ORDER BY live_updated_at`,
+      [tenantId]
+    );
 
     const items: any[] = [];
     if (unpaid?.count > 0) {
@@ -3143,6 +3225,12 @@ teaRouter.get('/notifications', async (req, res) => {
       items.push({
         type: 'vehicle_maintenance', severity: m.status === 'overdue' ? 'high' : 'medium',
         message: `${m.vehicle_number}: ${String(m.type).replace('_', ' ')} ${m.status === 'overdue' ? 'overdue' : `due ${new Date(m.due_date).toLocaleDateString('en-IN')}`}`,
+      });
+    }
+    for (const v of staleVehicles) {
+      items.push({
+        type: 'vehicle_stale', severity: 'medium',
+        message: `${v.vehicle_number}: no position update in ${Math.round(v.minutes_since_update)} min — check the driver's phone/connectivity`,
       });
     }
     ok(res, items);
