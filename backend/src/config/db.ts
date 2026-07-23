@@ -3758,5 +3758,83 @@ END $$;
         );
       `
     },
+    {
+      // Six additive feature areas requested together: the Tea Estate as
+      // its own entity (acres/leaf type/location/supervisor/manager) with
+      // existing plots ("fields") linked under it; guest house room
+      // assignment for workers; a medical facility with a mapped
+      // pharmacist; wastage + grade-wise made-tea breakdown on production;
+      // and grade/bag-count on sales for bulk/loose/market-bag selling.
+      name: '101_tea_estate_expansion',
+      sql: `
+        CREATE TABLE IF NOT EXISTS tea_estates (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          acres DECIMAL(10,2),
+          leaf_type VARCHAR(60),
+          location VARCHAR(300),
+          supervisor_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          manager_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_estates_tenant ON tea_estates(tenant_id);
+
+        ALTER TABLE tea_estate_plots ADD COLUMN IF NOT EXISTS estate_id UUID REFERENCES tea_estates(id) ON DELETE SET NULL;
+
+        CREATE TABLE IF NOT EXISTS tea_guest_houses (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          location VARCHAR(300),
+          total_rooms INT DEFAULT 1,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_guest_houses_tenant ON tea_guest_houses(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_guest_house_assignments (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          guest_house_id UUID NOT NULL REFERENCES tea_guest_houses(id) ON DELETE CASCADE,
+          worker_id UUID NOT NULL REFERENCES tea_estate_workers(id) ON DELETE CASCADE,
+          room_number VARCHAR(20),
+          check_in_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          check_out_date DATE,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_guest_house_assign_tenant ON tea_guest_house_assignments(tenant_id, is_active);
+
+        CREATE TABLE IF NOT EXISTS tea_medical_facilities (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          location VARCHAR(300),
+          facility_type VARCHAR(30) DEFAULT 'dispensary',
+          pharmacist_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          contact_phone VARCHAR(20),
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_medical_facilities_tenant ON tea_medical_facilities(tenant_id);
+
+        ALTER TABLE tea_collection_batches ADD COLUMN IF NOT EXISTS wastage_kg DECIMAL(10,2);
+
+        CREATE TABLE IF NOT EXISTS tea_production_grades (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id UUID NOT NULL REFERENCES tea_collection_batches(id) ON DELETE CASCADE,
+          grade VARCHAR(10) NOT NULL,
+          kg DECIMAL(10,2) NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(batch_id, grade)
+        );
+
+        ALTER TABLE tea_sale_transactions ADD COLUMN IF NOT EXISTS grade VARCHAR(10);
+        ALTER TABLE tea_sale_transactions ADD COLUMN IF NOT EXISTS bag_count INT;
+      `
+    },
   ];
 }

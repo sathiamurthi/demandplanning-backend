@@ -433,6 +433,19 @@ teaRouter.get('/collections/batches/:batchId/entries', async (req, res) => {
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
+teaRouter.get('/collections/batches/:batchId/grades', async (req, res) => {
+  try {
+    const { tenantId, batchId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT pg.grade, pg.kg FROM tea_production_grades pg
+       JOIN tea_collection_batches b ON b.id=pg.batch_id
+       WHERE pg.batch_id=$1 AND b.tenant_id=$2 ORDER BY pg.grade`,
+      [batchId, tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
 // Add collection entry
 teaRouter.post('/collections/batches/:batchId/entries', requireRole('superadmin', 'owner', 'manager', 'staff', 'collection_manager', 'agent'), async (req, res) => {
   try {
@@ -1844,7 +1857,15 @@ teaRouter.post('/fuel-consumption', requireRole('superadmin', 'owner', 'manager'
 teaRouter.get('/estate/plots', async (req, res) => {
   try {
     const { tenantId } = req.params as any;
-    const rows = await query<any>('SELECT * FROM tea_estate_plots WHERE tenant_id=$1 ORDER BY name', [tenantId]);
+    const { estate_id } = req.query as any;
+    const conds = ['p.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (estate_id) { conds.push(`p.estate_id=$${i++}`); vals.push(estate_id); }
+    const rows = await query<any>(
+      `SELECT p.*, e.name AS estate_name FROM tea_estate_plots p
+       LEFT JOIN tea_estates e ON e.id=p.estate_id
+       WHERE ${conds.join(' AND ')} ORDER BY p.name`,
+      vals
+    );
     ok(res, rows);
   } catch (e: any) { fail(res, e.message, 500); }
 });
@@ -1852,13 +1873,220 @@ teaRouter.get('/estate/plots', async (req, res) => {
 teaRouter.post('/estate/plots', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
-    const { name, area_hectares, manager_user_id } = req.body;
+    const { name, area_hectares, manager_user_id, estate_id } = req.body;
     if (!name) return fail(res, 'name required');
     const [p] = await query<any>(
-      `INSERT INTO tea_estate_plots (tenant_id, name, area_hectares, manager_user_id) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [tenantId, name, area_hectares || null, manager_user_id || null]
+      `INSERT INTO tea_estate_plots (tenant_id, name, area_hectares, manager_user_id, estate_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, area_hectares || null, manager_user_id || null, estate_id || null]
     );
     ok(res, p, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/estate/plots/:plotId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, plotId } = req.params as any;
+    const { name, area_hectares, manager_user_id, estate_id } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (area_hectares !== undefined) { sets.push(`area_hectares=$${i++}`); vals.push(area_hectares); }
+    if (manager_user_id !== undefined) { sets.push(`manager_user_id=$${i++}`); vals.push(manager_user_id); }
+    if (estate_id !== undefined) { sets.push(`estate_id=$${i++}`); vals.push(estate_id); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(plotId, tenantId);
+    const [p] = await query<any>(`UPDATE tea_estate_plots SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!p) return fail(res, 'Plot not found', 404);
+    ok(res, p);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ── Tea Estates — the whole-estate entity (acres, leaf type, location,
+// supervisor/manager), distinct from tea_estate_plots ("fields") which
+// sit underneath it via estate_id.
+teaRouter.get('/estates', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT e.*, s.name AS supervisor_name, m.name AS manager_name,
+              (SELECT COUNT(*)::int FROM tea_estate_plots p WHERE p.estate_id=e.id) AS field_count
+       FROM tea_estates e
+       LEFT JOIN tea_estate_workers s ON s.id=e.supervisor_id
+       LEFT JOIN tea_estate_workers m ON m.id=e.manager_id
+       WHERE e.tenant_id=$1 ORDER BY e.name`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/estates', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, acres, leaf_type, location, supervisor_id, manager_id, notes } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [e] = await query<any>(
+      `INSERT INTO tea_estates (tenant_id, name, acres, leaf_type, location, supervisor_id, manager_id, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [tenantId, name, acres || null, leaf_type || null, location || null, supervisor_id || null, manager_id || null, notes || null]
+    );
+    ok(res, e, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/estates/:estateId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, estateId } = req.params as any;
+    const { name, acres, leaf_type, location, supervisor_id, manager_id, notes } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (acres !== undefined) { sets.push(`acres=$${i++}`); vals.push(acres); }
+    if (leaf_type !== undefined) { sets.push(`leaf_type=$${i++}`); vals.push(leaf_type); }
+    if (location !== undefined) { sets.push(`location=$${i++}`); vals.push(location); }
+    if (supervisor_id !== undefined) { sets.push(`supervisor_id=$${i++}`); vals.push(supervisor_id); }
+    if (manager_id !== undefined) { sets.push(`manager_id=$${i++}`); vals.push(manager_id); }
+    if (notes !== undefined) { sets.push(`notes=$${i++}`); vals.push(notes); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(estateId, tenantId);
+    const [e] = await query<any>(`UPDATE tea_estates SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!e) return fail(res, 'Estate not found', 404);
+    ok(res, e);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ── Guest House management — rooms, and assigning workers to a room ──
+teaRouter.get('/guest-houses', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT g.*, (SELECT COUNT(*)::int FROM tea_guest_house_assignments a WHERE a.guest_house_id=g.id AND a.is_active=TRUE) AS occupied_rooms
+       FROM tea_guest_houses g WHERE g.tenant_id=$1 ORDER BY g.name`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/guest-houses', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, location, total_rooms, notes } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [g] = await query<any>(
+      `INSERT INTO tea_guest_houses (tenant_id, name, location, total_rooms, notes) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [tenantId, name, location || null, total_rooms || 1, notes || null]
+    );
+    ok(res, g, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/guest-houses/:guestHouseId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, guestHouseId } = req.params as any;
+    const { name, location, total_rooms, notes } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (location !== undefined) { sets.push(`location=$${i++}`); vals.push(location); }
+    if (total_rooms !== undefined) { sets.push(`total_rooms=$${i++}`); vals.push(total_rooms); }
+    if (notes !== undefined) { sets.push(`notes=$${i++}`); vals.push(notes); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(guestHouseId, tenantId);
+    const [g] = await query<any>(`UPDATE tea_guest_houses SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!g) return fail(res, 'Guest house not found', 404);
+    ok(res, g);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.get('/guest-house-assignments', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { guest_house_id, active_only } = req.query as any;
+    const conds = ['a.tenant_id=$1']; const vals: any[] = [tenantId]; let i = 2;
+    if (guest_house_id) { conds.push(`a.guest_house_id=$${i++}`); vals.push(guest_house_id); }
+    if (active_only === 'true') conds.push('a.is_active=TRUE');
+    const rows = await query<any>(
+      `SELECT a.*, gh.name AS guest_house_name, w.name AS worker_name
+       FROM tea_guest_house_assignments a
+       JOIN tea_guest_houses gh ON gh.id=a.guest_house_id
+       JOIN tea_estate_workers w ON w.id=a.worker_id
+       WHERE ${conds.join(' AND ')} ORDER BY a.is_active DESC, a.check_in_date DESC`,
+      vals
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/guest-house-assignments', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { guest_house_id, worker_id, room_number, check_in_date, notes } = req.body;
+    if (!guest_house_id || !worker_id) return fail(res, 'guest_house_id and worker_id required');
+    const [a] = await query<any>(
+      `INSERT INTO tea_guest_house_assignments (tenant_id, guest_house_id, worker_id, room_number, check_in_date, notes)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [tenantId, guest_house_id, worker_id, room_number || null, check_in_date || new Date().toISOString().slice(0, 10), notes || null]
+    );
+    ok(res, a, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/guest-house-assignments/:assignmentId/checkout', requireRole('superadmin', 'owner', 'manager', 'estate_manager'), async (req, res) => {
+  try {
+    const { tenantId, assignmentId } = req.params as any;
+    const { check_out_date } = req.body;
+    const [a] = await query<any>(
+      `UPDATE tea_guest_house_assignments SET is_active=FALSE, check_out_date=$1
+       WHERE id=$2 AND tenant_id=$3 RETURNING *`,
+      [check_out_date || new Date().toISOString().slice(0, 10), assignmentId, tenantId]
+    );
+    if (!a) return fail(res, 'Assignment not found', 404);
+    ok(res, a);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+// ── Medical facility — dispensary/clinic with a mapped pharmacist ──
+teaRouter.get('/medical-facilities', async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const rows = await query<any>(
+      `SELECT f.*, w.name AS pharmacist_name FROM tea_medical_facilities f
+       LEFT JOIN tea_estate_workers w ON w.id=f.pharmacist_id
+       WHERE f.tenant_id=$1 ORDER BY f.name`,
+      [tenantId]
+    );
+    ok(res, rows);
+  } catch (e: any) { fail(res, e.message, 500); }
+});
+
+teaRouter.post('/medical-facilities', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId } = req.params as any;
+    const { name, location, facility_type, pharmacist_id, contact_phone, notes } = req.body;
+    if (!name) return fail(res, 'name required');
+    const [f] = await query<any>(
+      `INSERT INTO tea_medical_facilities (tenant_id, name, location, facility_type, pharmacist_id, contact_phone, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [tenantId, name, location || null, facility_type || 'dispensary', pharmacist_id || null, contact_phone || null, notes || null]
+    );
+    ok(res, f, 201);
+  } catch (e: any) { fail(res, e.message); }
+});
+
+teaRouter.put('/medical-facilities/:facilityId', requireRole('superadmin', 'owner', 'manager'), async (req, res) => {
+  try {
+    const { tenantId, facilityId } = req.params as any;
+    const { name, location, facility_type, pharmacist_id, contact_phone, notes } = req.body;
+    const sets: string[] = []; const vals: any[] = []; let i = 1;
+    if (name !== undefined) { sets.push(`name=$${i++}`); vals.push(name); }
+    if (location !== undefined) { sets.push(`location=$${i++}`); vals.push(location); }
+    if (facility_type !== undefined) { sets.push(`facility_type=$${i++}`); vals.push(facility_type); }
+    if (pharmacist_id !== undefined) { sets.push(`pharmacist_id=$${i++}`); vals.push(pharmacist_id); }
+    if (contact_phone !== undefined) { sets.push(`contact_phone=$${i++}`); vals.push(contact_phone); }
+    if (notes !== undefined) { sets.push(`notes=$${i++}`); vals.push(notes); }
+    if (!sets.length) return fail(res, 'No fields to update');
+    vals.push(facilityId, tenantId);
+    const [f] = await query<any>(`UPDATE tea_medical_facilities SET ${sets.join(',')} WHERE id=$${i} AND tenant_id=$${i+1} RETURNING *`, vals);
+    if (!f) return fail(res, 'Medical facility not found', 404);
+    ok(res, f);
   } catch (e: any) { fail(res, e.message); }
 });
 
@@ -2214,7 +2442,7 @@ const PRODUCTION_STAGES = ['intake', 'withering', 'firing', 'grading', 'packagin
 teaRouter.patch('/collections/batches/:batchId/stage', requireRole('superadmin', 'owner', 'manager', 'staff'), async (req, res) => {
   try {
     const { tenantId, batchId } = req.params as any;
-    const { stage, made_tea_kg, fuel_consumption_id } = req.body;
+    const { stage, made_tea_kg, fuel_consumption_id, wastage_kg, grades } = req.body;
     if (!stage || !PRODUCTION_STAGES.includes(stage)) return fail(res, `stage must be one of ${PRODUCTION_STAGES.join(', ')}`);
 
     const batch = await queryOne<any>('SELECT total_kg, made_tea_kg FROM tea_collection_batches WHERE id=$1 AND tenant_id=$2', [batchId, tenantId]);
@@ -2229,11 +2457,28 @@ teaRouter.patch('/collections/batches/:batchId/stage', requireRole('superadmin',
     }
 
     const [b] = await query<any>(
-      `UPDATE tea_collection_batches SET stage=$1, made_tea_kg=$2, yield_pct=$3, stage_updated_at=NOW(), updated_at=NOW()
-       WHERE id=$4 AND tenant_id=$5 RETURNING *`,
-      [stage, finalMadeKg, yieldPct, batchId, tenantId]
+      `UPDATE tea_collection_batches SET stage=$1, made_tea_kg=$2, yield_pct=$3,
+              wastage_kg=COALESCE($4, wastage_kg), stage_updated_at=NOW(), updated_at=NOW()
+       WHERE id=$5 AND tenant_id=$6 RETURNING *`,
+      [stage, finalMadeKg, yieldPct, wastage_kg !== undefined ? parseFloat(wastage_kg) : null, batchId, tenantId]
     );
-    ok(res, b);
+
+    // Grade-wise made-tea breakdown (e.g. Grade A/B/C/Dust kg out of this
+    // batch) — one row per grade, upserted so re-submitting the same
+    // grade updates its kg rather than duplicating.
+    if (Array.isArray(grades)) {
+      for (const g of grades) {
+        if (!g?.grade || g.kg == null) continue;
+        await query(
+          `INSERT INTO tea_production_grades (batch_id, grade, kg) VALUES ($1,$2,$3)
+           ON CONFLICT (batch_id, grade) DO UPDATE SET kg=$3`,
+          [batchId, g.grade, parseFloat(g.kg)]
+        );
+      }
+    }
+
+    const gradeRows = await query<any>('SELECT grade, kg FROM tea_production_grades WHERE batch_id=$1 ORDER BY grade', [batchId]);
+    ok(res, { ...b, grades: gradeRows });
   } catch (e: any) { fail(res, e.message); }
 });
 
@@ -2668,13 +2913,13 @@ teaRouter.get('/sales', async (req, res) => {
 teaRouter.post('/sales', requireRole('superadmin', 'owner', 'manager', 'sales_manager'), async (req, res) => {
   try {
     const { tenantId } = req.params as any;
-    const { batch_id, channel = 'private', buyer_id, quantity_kg, price_per_kg, sale_date } = req.body;
+    const { batch_id, channel = 'private', buyer_id, quantity_kg, price_per_kg, sale_date, grade, bag_count } = req.body;
     if (!quantity_kg || !price_per_kg) return fail(res, 'quantity_kg and price_per_kg required');
     const total_amount = parseFloat(quantity_kg) * parseFloat(price_per_kg);
     const [s] = await query<any>(
-      `INSERT INTO tea_sale_transactions (tenant_id, batch_id, channel, buyer_id, quantity_kg, price_per_kg, total_amount, sale_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [tenantId, batch_id || null, channel, buyer_id || null, quantity_kg, price_per_kg, total_amount, sale_date || new Date().toISOString().slice(0, 10)]
+      `INSERT INTO tea_sale_transactions (tenant_id, batch_id, channel, buyer_id, quantity_kg, price_per_kg, total_amount, sale_date, grade, bag_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [tenantId, batch_id || null, channel, buyer_id || null, quantity_kg, price_per_kg, total_amount, sale_date || new Date().toISOString().slice(0, 10), grade || null, bag_count || null]
     );
     ok(res, s, 201);
   } catch (e: any) { fail(res, e.message); }
@@ -2701,7 +2946,14 @@ teaRouter.get('/reports/sales', async (req, res) => {
        ORDER BY auction_date DESC`,
       [tenantId, dateFrom, dateTo]
     );
-    ok(res, { by_channel: byChannel, auction_performance: auctionPerf });
+    const byGrade = await query<any>(
+      `SELECT COALESCE(grade, 'ungraded') AS grade, COUNT(*)::int AS transactions,
+              SUM(quantity_kg) AS total_kg, SUM(total_amount) AS total_revenue, AVG(price_per_kg) AS avg_price_per_kg
+       FROM tea_sale_transactions WHERE tenant_id=$1 AND sale_date BETWEEN $2 AND $3
+       GROUP BY grade ORDER BY grade`,
+      [tenantId, dateFrom, dateTo]
+    );
+    ok(res, { by_channel: byChannel, auction_performance: auctionPerf, by_grade: byGrade });
   } catch (e: any) { fail(res, e.message, 500); }
 });
 
