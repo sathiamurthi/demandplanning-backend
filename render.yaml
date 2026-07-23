@@ -12,10 +12,14 @@ services:
         value: production
       - key: PORT
         value: 10000
+      # Cut over to an external Neon Postgres ("dplaning") — data was
+      # migrated from the demandplanning-db Render Postgres below, which
+      # is kept only as a fallback/backup, not deleted. sync: false means
+      # the blueprint won't manage this value (and won't revert it back to
+      # fromDatabase on the next sync) — the real value is set directly on
+      # the Render service via the dashboard/API.
       - key: DATABASE_URL
-        fromDatabase:
-          name: demandplanning-db
-          property: connectionString
+        sync: false
       - key: REDIS_URL
         fromService:
           name: demandplanning-redis
