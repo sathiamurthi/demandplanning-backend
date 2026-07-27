@@ -1,6 +1,6 @@
 const { Client } = require('pg');
 
-const databaseUrl = 'postgres://postgres:admin@localhost:5432/dplaning';
+const databaseUrl = 'postgresql://neondb_owner:npg_Ty8nLXEefH7b@ep-long-wildflower-awz3odd6-pooler.c-12.us-east-1.aws.neon.tech/dplaning?sslmode=require&channel_binding=require';
 
 async function run() {
   const client = new Client({
