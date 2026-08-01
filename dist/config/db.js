@@ -3633,5 +3633,187 @@ END $$;
         ON CONFLICT (id) DO NOTHING;
       `
         },
+        {
+            // Purchase-order line items priced GST additively (total = base *
+            // (1 + gst%)), inflating the payable amount above the item's actual
+            // selling price. Re-derive the three generated columns so unit_price
+            // is treated as GST-INCLUSIVE instead: total stays exactly
+            // quantity*unit_price (never inflated), and subtotal/gst_amount are
+            // a compliance-reporting split OF that fixed total, not additions
+            // to it. Drops+re-adds only the generated columns — quantity/
+            // unit_price/gst_rate (the real data) are untouched, so no PO
+            // history is lost.
+            name: '096_po_items_gst_inclusive',
+            sql: `
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS total;
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS gst_amount;
+        ALTER TABLE purchase_order_items DROP COLUMN IF EXISTS subtotal;
+        ALTER TABLE purchase_order_items ADD COLUMN subtotal DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price / (1 + gst_rate/100)) STORED;
+        ALTER TABLE purchase_order_items ADD COLUMN gst_amount DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price - quantity * unit_price / (1 + gst_rate/100)) STORED;
+        ALTER TABLE purchase_order_items ADD COLUMN total DECIMAL(10,2)
+          GENERATED ALWAYS AS (quantity * unit_price) STORED;
+      `
+        },
+        {
+            // Pharmacy (and any store) drug/trade license number — captured once
+            // per store and printed on bills, alongside the existing gst_number.
+            name: '097_stores_drug_license',
+            sql: `
+        ALTER TABLE stores ADD COLUMN IF NOT EXISTS drug_license_number VARCHAR(50);
+        ALTER TABLE stores ADD COLUMN IF NOT EXISTS drug_license_expiry DATE;
+      `
+        },
+        {
+            // Custom, tenant-defined roles for TeaFactory360 (e.g. "Field
+            // Officer") with a per-module permission grid — additive to, not a
+            // replacement of, the existing fixed user_role enum. A user keeps a
+            // base role (owner/manager/staff/agent) for coarse platform-wide
+            // gating, and can ALSO be assigned a tea_role_id whose `permissions`
+            // JSONB ({ moduleKey: boolean }) governs access to specific
+            // TeaFactory360 sections (growers, collections, dispatch, ...) — see
+            // requireTeaAccess() in tea-roles.service.ts. Nullable + ON DELETE
+            // SET NULL so deleting a role never breaks the user row.
+            name: '098_tea_custom_roles',
+            sql: `
+        CREATE TABLE IF NOT EXISTS tea_roles (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(100) NOT NULL,
+          permissions JSONB NOT NULL DEFAULT '{}',
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(tenant_id, name)
+        );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS tea_role_id UUID REFERENCES tea_roles(id) ON DELETE SET NULL;
+      `
+        },
+        {
+            // Estate/Factory org structure — tea_estate_workers previously only
+            // modeled the estate (field) side with a tiny 4-value role list.
+            // Adds: department (estate|factory, so the SAME table can also hold
+            // factory production staff — Tea Maker, Withering In-charge, etc.,
+            // per the real org chart), and reports_to_id for the manager
+            // hierarchy (Estate Manager -> Assistant Manager -> Field Officer ->
+            // ... ). role is widened to fit the real job titles from
+            // config/tea-org-roles.ts (e.g. "assistant_factory_mgr").
+            name: '099_tea_estate_org_structure',
+            sql: `
+        ALTER TABLE tea_estate_workers ALTER COLUMN role TYPE VARCHAR(60);
+        ALTER TABLE tea_estate_workers ADD COLUMN IF NOT EXISTS department VARCHAR(20) NOT NULL DEFAULT 'estate';
+        ALTER TABLE tea_estate_workers ADD COLUMN IF NOT EXISTS reports_to_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_tea_estate_workers_department ON tea_estate_workers(tenant_id, department);
+      `
+        },
+        {
+            // Idempotency guard for scheduled background jobs (tea daily digest,
+            // weekly grower payment notice) — an atomic INSERT ... ON CONFLICT
+            // DO NOTHING per (job_key, tenant_id, run_key) means a job that ticks
+            // every N minutes only actually fires once per its real cadence,
+            // without needing a separate cron scheduler process.
+            name: '100_tea_job_runs',
+            sql: `
+        CREATE TABLE IF NOT EXISTS tea_job_runs (
+          job_key VARCHAR(50) NOT NULL,
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          run_key VARCHAR(20) NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          PRIMARY KEY (job_key, tenant_id, run_key)
+        );
+      `
+        },
+        {
+            // Six additive feature areas requested together: the Tea Estate as
+            // its own entity (acres/leaf type/location/supervisor/manager) with
+            // existing plots ("fields") linked under it; guest house room
+            // assignment for workers; a medical facility with a mapped
+            // pharmacist; wastage + grade-wise made-tea breakdown on production;
+            // and grade/bag-count on sales for bulk/loose/market-bag selling.
+            name: '101_tea_estate_expansion',
+            sql: `
+        CREATE TABLE IF NOT EXISTS tea_estates (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          acres DECIMAL(10,2),
+          leaf_type VARCHAR(60),
+          location VARCHAR(300),
+          supervisor_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          manager_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_estates_tenant ON tea_estates(tenant_id);
+
+        ALTER TABLE tea_estate_plots ADD COLUMN IF NOT EXISTS estate_id UUID REFERENCES tea_estates(id) ON DELETE SET NULL;
+
+        CREATE TABLE IF NOT EXISTS tea_guest_houses (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          location VARCHAR(300),
+          total_rooms INT DEFAULT 1,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_guest_houses_tenant ON tea_guest_houses(tenant_id);
+
+        CREATE TABLE IF NOT EXISTS tea_guest_house_assignments (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          guest_house_id UUID NOT NULL REFERENCES tea_guest_houses(id) ON DELETE CASCADE,
+          worker_id UUID NOT NULL REFERENCES tea_estate_workers(id) ON DELETE CASCADE,
+          room_number VARCHAR(20),
+          check_in_date DATE NOT NULL DEFAULT CURRENT_DATE,
+          check_out_date DATE,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_guest_house_assign_tenant ON tea_guest_house_assignments(tenant_id, is_active);
+
+        CREATE TABLE IF NOT EXISTS tea_medical_facilities (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          name VARCHAR(200) NOT NULL,
+          location VARCHAR(300),
+          facility_type VARCHAR(30) DEFAULT 'dispensary',
+          pharmacist_id UUID REFERENCES tea_estate_workers(id) ON DELETE SET NULL,
+          contact_phone VARCHAR(20),
+          notes TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_tea_medical_facilities_tenant ON tea_medical_facilities(tenant_id);
+
+        ALTER TABLE tea_collection_batches ADD COLUMN IF NOT EXISTS wastage_kg DECIMAL(10,2);
+
+        CREATE TABLE IF NOT EXISTS tea_production_grades (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id UUID NOT NULL REFERENCES tea_collection_batches(id) ON DELETE CASCADE,
+          grade VARCHAR(10) NOT NULL,
+          kg DECIMAL(10,2) NOT NULL DEFAULT 0,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(batch_id, grade)
+        );
+
+        ALTER TABLE tea_sale_transactions ADD COLUMN IF NOT EXISTS bag_count INT;
+      `
+        },
+        {
+            name: '034_data360_reconciliation',
+            sql: `
+        CREATE TABLE IF NOT EXISTS data360_reconciliation_logs (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id UUID NOT NULL REFERENCES data360_batches(id) ON DELETE CASCADE,
+          stage VARCHAR(50) NOT NULL,
+          passed BOOLEAN NOT NULL,
+          expected_count INT NOT NULL,
+          actual_count INT NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_reconciliation_batch ON data360_reconciliation_logs(batch_id);
+      `
+        }
     ];
 }

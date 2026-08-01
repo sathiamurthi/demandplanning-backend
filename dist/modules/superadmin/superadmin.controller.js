@@ -3,7 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getTenants = getTenants;
 exports.approveTenant = approveTenant;
 exports.deactivateTenant = deactivateTenant;
+exports.listTeaGrowers = listTeaGrowers;
+exports.activateTeaGrower = activateTeaGrower;
+exports.deactivateTeaGrower = deactivateTeaGrower;
 exports.getUsers = getUsers;
+exports.activateUser = activateUser;
+exports.deactivateUser = deactivateUser;
 exports.changePassword = changePassword;
 exports.sendNotification = sendNotification;
 exports.sendMessage = sendMessage;
@@ -67,6 +72,53 @@ async function deactivateTenant(req, res) {
         res.status(500).json({ success: false, error: err.message });
     }
 }
+// ── TeaFactory360 growers — cross-tenant oversight ──────────────────
+// Growers don't have their own account (their "login" is just a phone
+// number an Agent/Factory already put on file — see grower-auth/login),
+// so there's nothing to "approve" per se; is_active is the one lever
+// that controls whether that phone number can still sign in.
+async function listTeaGrowers(req, res) {
+    try {
+        const rows = await (0, db_1.query)(`SELECT g.id, g.name, g.grower_code, g.phone, g.is_active, g.created_at,
+              t.id AS tenant_id, t.name AS tenant_name
+       FROM tea_growers g
+       JOIN tenants t ON t.id = g.tenant_id
+       ORDER BY g.created_at DESC
+       LIMIT 500`);
+        res.json({ success: true, data: rows });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+async function activateTeaGrower(req, res) {
+    try {
+        const { id } = req.params;
+        const rows = await (0, db_1.query)(`UPDATE tea_growers SET is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+        if (!rows.length) {
+            res.status(404).json({ success: false, error: "Grower not found" });
+            return;
+        }
+        res.json({ success: true, data: { activated: true } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+async function deactivateTeaGrower(req, res) {
+    try {
+        const { id } = req.params;
+        const rows = await (0, db_1.query)(`UPDATE tea_growers SET is_active=FALSE, updated_at=NOW() WHERE id=$1 RETURNING id`, [id]);
+        if (!rows.length) {
+            res.status(404).json({ success: false, error: "Grower not found" });
+            return;
+        }
+        res.json({ success: true, data: { deactivated: true } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
 async function getUsers(req, res) {
     try {
         const result = await queryBus_1.queryBus.execute({
@@ -76,6 +128,35 @@ async function getUsers(req, res) {
     }
     catch (err) {
         console.error("getUsers error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+// Approve a pending self-registration (e.g. a TeaFactory360 agent) or
+// re-enable a previously deactivated account — same underlying flag
+// (users.is_active), covers both cases.
+async function activateUser(req, res) {
+    try {
+        const id = req.params.id;
+        const result = await commandBus_1.commandBus.execute({
+            type: "superadmin.user.activate",
+            userId: id,
+        });
+        res.json({ success: true, data: result });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+}
+async function deactivateUser(req, res) {
+    try {
+        const id = req.params.id;
+        const result = await commandBus_1.commandBus.execute({
+            type: "superadmin.user.deactivate",
+            userId: id,
+        });
+        res.json({ success: true, data: result });
+    }
+    catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
 }
@@ -546,8 +627,13 @@ const router = (0, express_1.Router)();
 router.get("/tenants", getTenants);
 router.post("/tenants/approve/:id", approveTenant);
 router.post("/tenants/deactivate/:id", deactivateTenant);
+router.get("/tea/growers", listTeaGrowers);
+router.post("/tea/growers/:id/activate", activateTeaGrower);
+router.post("/tea/growers/:id/deactivate", deactivateTeaGrower);
 router.get("/users", getUsers);
 router.patch("/users/:id/password", changePassword);
+router.post("/users/:id/activate", activateUser);
+router.post("/users/:id/deactivate", deactivateUser);
 router.post("/notifications", sendNotification);
 router.post("/messages", sendMessage);
 router.post("/subscriptions", manageSubscription);

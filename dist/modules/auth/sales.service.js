@@ -42,14 +42,23 @@ class CreateSaleCommandHandler {
                 if (parseFloat(item.current_stock) < si.qtySold)
                     throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}`);
                 const discount = (si.unitPrice * si.qtySold * (si.discountPct || 0)) / 100;
-                const lineSubtotal = si.unitPrice * si.qtySold - discount;
+                // unitPrice is the selling/MRP price, GST-INCLUSIVE (standard Indian
+                // retail practice) — so the line's payable amount is fixed at
+                // (unitPrice*qty - discount), and GST is a component SPLIT OUT of
+                // that amount for compliance reporting, never added on top of it.
+                const lineInclusive = si.unitPrice * si.qtySold - discount;
                 const gstRate = si.gstRate ?? parseFloat(item.gst_rate) ?? 0;
-                const lineGst = (lineSubtotal * gstRate) / 100;
+                const lineGst = (lineInclusive * gstRate) / (100 + gstRate);
+                const lineSubtotal = lineInclusive - lineGst;
                 subtotal += lineSubtotal;
                 totalGst += lineGst;
                 stockUpdates.push({ itemId: si.itemId, newStock: parseFloat(item.current_stock) - si.qtySold, name: item.name });
             }
             const extraDiscount = cmd.discountAmount || 0;
+            // subtotal + totalGst reconstructs the same sum of line-inclusive
+            // amounts by construction (lineSubtotal + lineGst = lineInclusive),
+            // so the customer-facing total is never inflated by GST — only the
+            // subtotal/gst_amount split changes, not the amount actually charged.
             const total = subtotal + totalGst - extraDiscount;
             const saleNumber = await generateSaleNumber(cmd.storeId, cmd.saleType);
             // 2. Create sale record
@@ -62,10 +71,11 @@ class CreateSaleCommandHandler {
             for (const si of cmd.items) {
                 const item = await client.query('SELECT * FROM items WHERE id=$1', [si.itemId]).then(r => r.rows[0]);
                 const discount = (si.unitPrice * si.qtySold * (si.discountPct || 0)) / 100;
-                const lineSubtotal = si.unitPrice * si.qtySold - discount;
+                const lineInclusive = si.unitPrice * si.qtySold - discount;
                 const gstRate = si.gstRate ?? parseFloat(item.gst_rate) ?? 0;
-                const lineGst = (lineSubtotal * gstRate) / 100;
-                const lineTotal = lineSubtotal + lineGst;
+                const lineGst = (lineInclusive * gstRate) / (100 + gstRate);
+                const lineSubtotal = lineInclusive - lineGst;
+                const lineTotal = lineInclusive;
                 const unitId = si.unitId || item.primary_unit_id;
                 const [li] = await client.query(`INSERT INTO sale_items (sale_id,item_id,qty_sold,unit_id,unit_price,discount_pct,discount_amount,gst_rate,gst_amount,line_total,batch_number,expiry_date)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [sale.id, si.itemId, si.qtySold, unitId, si.unitPrice, si.discountPct || 0, discount, gstRate, lineGst, lineTotal, si.batchNumber || null, si.expiryDate || null]).then(r => r.rows);

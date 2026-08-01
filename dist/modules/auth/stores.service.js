@@ -62,9 +62,10 @@ class CreateStoreCommandHandler {
             if ((storeCount?.count || 0) >= tenant.max_stores)
                 throw new Error(`Plan limit reached: max ${tenant.max_stores} stores`);
         }
-        const [store] = await (0, db_1.query)(`INSERT INTO stores (tenant_id,name,code,owner_name,email,phone,address,city,state,pincode,gst_number)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [cmd.tenantId, cmd.name, cmd.code || null, cmd.ownerName || null, cmd.email || null, cmd.phone || null,
-            cmd.address || null, cmd.city || null, cmd.state || null, cmd.pincode || null, cmd.gstNumber || null]);
+        const [store] = await (0, db_1.query)(`INSERT INTO stores (tenant_id,name,code,owner_name,email,phone,address,city,state,pincode,gst_number,drug_license_number,drug_license_expiry)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`, [cmd.tenantId, cmd.name, cmd.code || null, cmd.ownerName || null, cmd.email || null, cmd.phone || null,
+            cmd.address || null, cmd.city || null, cmd.state || null, cmd.pincode || null, cmd.gstNumber || null,
+            cmd.drugLicenseNumber || null, cmd.drugLicenseExpiry || null]);
         return store;
     }
 }
@@ -104,6 +105,14 @@ class UpdateStoreCommandHandler {
         if (cmd.gstNumber !== undefined) {
             sets.push(`gst_number=$${i++}`);
             vals.push(cmd.gstNumber);
+        }
+        if (cmd.drugLicenseNumber !== undefined) {
+            sets.push(`drug_license_number=$${i++}`);
+            vals.push(cmd.drugLicenseNumber);
+        }
+        if (cmd.drugLicenseExpiry !== undefined) {
+            sets.push(`drug_license_expiry=$${i++}`);
+            vals.push(cmd.drugLicenseExpiry);
         }
         if (cmd.isActive !== undefined) {
             sets.push(`is_active=$${i++}`);
@@ -163,6 +172,7 @@ const StoreCreateSchema = zod_1.z.object({
     phone: zod_1.z.string().optional(), address: zod_1.z.string().optional(),
     city: zod_1.z.string().optional(), state: zod_1.z.string().optional(),
     pincode: zod_1.z.string().optional(), gstNumber: zod_1.z.string().optional(),
+    drugLicenseNumber: zod_1.z.string().optional(), drugLicenseExpiry: zod_1.z.string().optional(),
 });
 exports.storeRouter.get("/", async (req, res) => {
     try {

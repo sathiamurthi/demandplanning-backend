@@ -57,6 +57,7 @@ const pdf_lib_1 = require("pdf-lib");
 const db_1 = require("../../config/db");
 const aiService_1 = require("../../config/aiService");
 const logger_1 = require("../../config/logger");
+const reconciliation_service_1 = require("./reconciliation.service");
 exports.data360Router = (0, express_1.Router)();
 // ── Config ───────────────────────────────────────────────────
 const JWT_SECRET = (process.env.JWT_SECRET || 'dev-secret-change-this');
@@ -306,6 +307,11 @@ exports.data360Router.post('/batches', data360Auth, async (req, res) => {
             fail(res, 'rows must be a non-empty array');
             return;
         }
+        const validationRes = reconciliation_service_1.ReconciliationService.validateSourceData(rows);
+        if (!validationRes.passed) {
+            fail(res, validationRes.error || 'Source data validation failed');
+            return;
+        }
         if (!isUnlimitedUser(req.d360User.email)) {
             const [used, limit] = await Promise.all([getDocumentUsage(req.d360User.sub), getDocumentLimit(req.d360User.sub)]);
             if (used + rows.length > limit) {
@@ -356,6 +362,7 @@ exports.data360Router.post('/batches', data360Auth, async (req, res) => {
             await client.query(`UPDATE data360_batches SET flagged_rows=$1, updated_at=NOW() WHERE id=$2`, [flagged, batch.id]);
             return { batch: { ...batch, flagged_rows: flagged }, rows: insertedRows };
         });
+        await reconciliation_service_1.ReconciliationService.reconcileSourceToTarget(result.batch.id, rows.length);
         ok(res, result, 201);
     }
     catch (e) {
@@ -1233,6 +1240,7 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
                 : { extracted_entity: r.extracted_entity, target_field_a: r.target_field_a, target_field_b: r.target_field_b, source_type: r.source_type };
             return applyMapping(flat, mapping);
         });
+        await reconciliation_service_1.ReconciliationService.reconcileEtl(batch.id, approvedRowsRaw.length, approvedRows);
         // Never persist secrets in the config we store/echo back.
         const safeConfig = { ...(config || {}) };
         if (safeConfig.password)
@@ -1372,6 +1380,7 @@ exports.data360Router.post('/batches/:id/distribute', data360Auth, async (req, r
         const [updatedJob] = await (0, db_1.query)(`UPDATE data360_distribution_jobs SET status=$1, result=$2, completed_at=CASE WHEN $1 != 'pending' THEN NOW() ELSE NULL END WHERE id=$3 RETURNING *`, [status, JSON.stringify(result), job.id]);
         if (status === 'completed') {
             await (0, db_1.query)(`UPDATE data360_batches SET status='distributed', updated_at=NOW() WHERE id=$1`, [batch.id]);
+            await reconciliation_service_1.ReconciliationService.reconcileDistribution(batch.id, approvedRows.length, result.row_count || 0);
         }
         ok(res, updatedJob, 201);
     }

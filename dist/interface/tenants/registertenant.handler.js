@@ -40,13 +40,21 @@ class RegisterTenantCommandHandler {
             attempt++;
             slug = `${baseSlug}-${attempt}`;
         }
-        const industryConfig = await (0, db_1.queryOne)(`SELECT id FROM industry_configs WHERE industry_id=$1 OR id::text=$1 LIMIT 1`, [industry_id]);
+        const industryConfig = await (0, db_1.queryOne)(`SELECT id, industry_id FROM industry_configs WHERE industry_id=$1 OR id::text=$1 LIMIT 1`, [industry_id]);
         const resolvedEmail = emailNorm || `user_${Date.now()}@noemail.local`;
         const regType = phoneNorm && !emailNorm ? 'phone' : 'email';
+        // TeaFactory360 ("factory") signups need a superadmin to approve the
+        // new tenant before its owner can log in — everything else keeps
+        // auto-activating exactly as before. The existing login flow already
+        // checks tenants.is_active and rejects with 'Account is inactive', and
+        // the superadmin Tenants page already has a working Approve/Deactivate
+        // UI (built for this, just never triggered since nothing set this
+        // false before) — so this is the only line needed to wire it up.
+        const requiresApproval = industryConfig?.industry_id === 'tea';
         return (0, db_1.withTransaction)(async (client) => {
             const tenantRes = await client.query(`INSERT INTO tenants (name, plan_type, billing_status, slug, is_active, created_at, metadata)
-         VALUES ($1, 'free', 'active', $2, TRUE, NOW(), $3)
-         RETURNING id, name, plan_type, slug`, [companyName, slug, JSON.stringify({ registration_source: source || 'app' })]);
+         VALUES ($1, 'free', 'active', $2, $3, NOW(), $4)
+         RETURNING id, name, plan_type, slug`, [companyName, slug, !requiresApproval, JSON.stringify({ registration_source: source || 'app' })]);
             const tenant = tenantRes.rows[0];
             if (industryConfig) {
                 await client.query(`INSERT INTO tenant_industries (tenant_id, industry_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [tenant.id, industryConfig.id]);
@@ -59,14 +67,11 @@ class RegisterTenantCommandHandler {
          VALUES ($1, $2, $3, $4, $5, 'owner', $6, $7, TRUE, FALSE, $8)
          RETURNING id, email, phone, role, tenant_id, store_id, first_name, last_name`, [tenant.id, store.id, resolvedEmail, phoneNorm, hashed, firstName || '', lastName || '', regType]);
             const user = userRes.rows[0];
-            const resolvedIndustry = (industry_id || "").toLowerCase();
-            let industryKey = "retail";
-            if (resolvedIndustry.includes("pharma"))
-                industryKey = "pharma";
-            else if (resolvedIndustry.includes("grocery") || resolvedIndustry.includes("kirana"))
-                industryKey = "grocery";
-            else if (resolvedIndustry.includes("auto") || resolvedIndustry.includes("parts"))
-                industryKey = "auto";
+            // Use the DB-resolved industry slug (industryConfig.industry_id), not the
+            // raw request value — the raw value can be a UUID or other non-slug shape
+            // depending on what the client sent, but industryConfig was already looked
+            // up above by matching either the slug or the UUID, so it's authoritative.
+            const industryKey = (0, default_categories_1.resolveCategoryKey)(industryConfig?.industry_id);
             const defaultCategories = default_categories_1.categoriesMap[industryKey] || [
                 { name: "General", code: "GENERAL", desc: "Default category" }
             ];

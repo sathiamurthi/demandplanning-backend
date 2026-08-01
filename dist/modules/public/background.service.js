@@ -27,6 +27,7 @@ const logger_1 = require("../../config/logger");
 const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const gemini_service_1 = require("../auth/gemini.service");
 const saferide360_router_1 = require("../saferide360/saferide360.router");
+const tea_jobs_service_1 = require("../tea/tea-jobs.service");
 // ── Constants ─────────────────────────────────────────────────
 const ACTIVE_WINDOW_MIN = 15;
 const DB_CACHE_TTL_HR = 2;
@@ -536,10 +537,17 @@ function startBackgroundServices() {
     setTimeout(runAIJob, 60000); // AI job starts 1 min after boot
     setTimeout(saferide360_router_1.runSafeRide360RetentionJob, 45000);
     setTimeout(saferide360_router_1.runSafeRide360LocationUpdateJob, 90000);
+    setTimeout(tea_jobs_service_1.runTeaDailyDigestJob, 15000);
+    setTimeout(tea_jobs_service_1.runTeaWeeklyGrowerPaymentJob, 20000);
     setInterval(runDBJob, DB_JOB_INTERVAL_MS);
     setInterval(runOverpassJob, OS_JOB_INTERVAL_MS);
     setInterval(runAIJob, AI_JOB_INTERVAL_MS);
     setInterval(saferide360_router_1.runSafeRide360RetentionJob, 6 * 60 * 60000); // every 6 hours — a 2-day retention window doesn't need finer granularity
     setInterval(saferide360_router_1.runSafeRide360LocationUpdateJob, 10 * 60000); // every 10 min, matches the notification cadence itself
-    logger_1.logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr, SafeRide360 location:10min)');
+    // Both tea jobs self-gate on IST hour/day-of-week + an atomic per-tenant
+    // claim row (tea_job_runs), so a 15-min tick just needs to land inside
+    // the target hour at least once — no need for minute-level precision.
+    setInterval(tea_jobs_service_1.runTeaDailyDigestJob, 15 * 60000);
+    setInterval(tea_jobs_service_1.runTeaWeeklyGrowerPaymentJob, 15 * 60000);
+    logger_1.logger.info('✅ Background services started (DB:2min, Overpass:5min, AI:10min, SafeRide360 retention:6hr, SafeRide360 location:10min, Tea digest/payment:15min-gated)');
 }

@@ -3832,9 +3832,23 @@ END $$;
           UNIQUE(batch_id, grade)
         );
 
-        ALTER TABLE tea_sale_transactions ADD COLUMN IF NOT EXISTS grade VARCHAR(10);
         ALTER TABLE tea_sale_transactions ADD COLUMN IF NOT EXISTS bag_count INT;
       `
     },
+    {
+      name: '034_data360_reconciliation',
+      sql: `
+        CREATE TABLE IF NOT EXISTS data360_reconciliation_logs (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          batch_id UUID NOT NULL REFERENCES data360_batches(id) ON DELETE CASCADE,
+          stage VARCHAR(50) NOT NULL,
+          passed BOOLEAN NOT NULL,
+          expected_count INT NOT NULL,
+          actual_count INT NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_reconciliation_batch ON data360_reconciliation_logs(batch_id);
+      `
+    }
   ];
 }

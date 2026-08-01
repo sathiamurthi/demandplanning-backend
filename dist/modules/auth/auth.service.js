@@ -65,6 +65,7 @@ function generateTokens(user) {
         tenantId: user.tenant_id,
         storeId: user.store_id,
         industryId: user.industry_id ?? null,
+        teaRoleId: user.tea_role_id ?? null,
     };
     const accessToken = jsonwebtoken_1.default.sign(payload, JWT_SECRET, signOptions);
     const refreshToken = (0, uuid_1.v4)();
@@ -91,7 +92,7 @@ class LoginCommandHandler {
         const identifier = (cmd.email || cmd.phone || '').toLowerCase().trim();
         const isPhone = /^\+?\d{7,15}$/.test(identifier.replace(/\s/g, ''));
         const user = await (0, db_1.queryOne)(`SELECT u.id, u.email, u.phone, u.password_hash, u.tenant_id, u.role,
-              u.first_name, u.last_name, u.store_id,
+              u.first_name, u.last_name, u.store_id, u.tea_role_id,
               ic.industry_id
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -123,6 +124,7 @@ class LoginCommandHandler {
                 tenantId: user.tenant_id,
                 storeId: user.store_id,
                 industryId: user.industry_id,
+                teaRoleId: user.tea_role_id,
             },
         };
     }
@@ -225,6 +227,7 @@ const authMiddleware = (req, res, next) => {
             role: decoded.role ?? "staff",
             storeId: decoded.storeId,
             industryId: decoded.industryId,
+            teaRoleId: decoded.teaRoleId ?? null,
         };
         next();
     }
@@ -331,7 +334,7 @@ exports.authRouter.post("/refresh", async (req, res) => {
     if (!refreshToken)
         return fail(res, "Missing refresh token", 400);
     try {
-        const record = await (0, db_1.queryOne)(`SELECT rt.user_id, u.email, u.role, u.tenant_id, u.store_id, t.industry_id
+        const record = await (0, db_1.queryOne)(`SELECT rt.user_id, u.email, u.role, u.tenant_id, u.store_id, u.tea_role_id, t.industry_id
        FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -345,6 +348,7 @@ exports.authRouter.post("/refresh", async (req, res) => {
             tenantId: record.tenant_id,
             storeId: record.store_id,
             industryId: record.industry_id ?? null,
+            teaRoleId: record.tea_role_id ?? null,
         };
         const accessToken = jsonwebtoken_1.default.sign(payload, JWT_SECRET, signOptions);
         ok(res, { accessToken, expiresIn: signOptions.expiresIn });

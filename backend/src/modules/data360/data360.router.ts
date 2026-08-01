@@ -18,6 +18,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { query, queryOne, withTransaction, runMigrations } from '../../config/db';
 import { callAI, costEffectiveOrder } from '../../config/aiService';
 import { logger } from '../../config/logger';
+import { ReconciliationService } from './reconciliation.service';
 
 export const data360Router = Router();
 
@@ -259,6 +260,9 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
     if (!name?.trim()) { fail(res, 'name is required'); return; }
     if (!Array.isArray(rows) || rows.length === 0) { fail(res, 'rows must be a non-empty array'); return; }
 
+    const validationRes = ReconciliationService.validateSourceData(rows);
+    if (!validationRes.passed) { fail(res, validationRes.error || 'Source data validation failed'); return; }
+
     if (!isUnlimitedUser(req.d360User.email)) {
       const [used, limit] = await Promise.all([getDocumentUsage(req.d360User.sub), getDocumentLimit(req.d360User.sub)]);
       if (used + rows.length > limit) {
@@ -315,6 +319,8 @@ data360Router.post('/batches', data360Auth, async (req: D360Req, res) => {
       await client.query(`UPDATE data360_batches SET flagged_rows=$1, updated_at=NOW() WHERE id=$2`, [flagged, batch.id]);
       return { batch: { ...batch, flagged_rows: flagged }, rows: insertedRows };
     });
+
+    await ReconciliationService.reconcileSourceToTarget(result.batch.id, rows.length);
 
     ok(res, result, 201);
   } catch (e: any) {
@@ -1180,6 +1186,8 @@ data360Router.post('/batches/:id/distribute', data360Auth, async (req: D360Req, 
       return applyMapping(flat, mapping);
     });
 
+    await ReconciliationService.reconcileEtl(batch.id, approvedRowsRaw.length, approvedRows);
+
     // Never persist secrets in the config we store/echo back.
     const safeConfig = { ...(config || {}) };
     if (safeConfig.password) safeConfig.password = '••••••••';
@@ -1311,6 +1319,7 @@ data360Router.post('/batches/:id/distribute', data360Auth, async (req: D360Req, 
 
     if (status === 'completed') {
       await query(`UPDATE data360_batches SET status='distributed', updated_at=NOW() WHERE id=$1`, [batch.id]);
+      await ReconciliationService.reconcileDistribution(batch.id, approvedRows.length, result.row_count || 0);
     }
 
     ok(res, updatedJob, 201);

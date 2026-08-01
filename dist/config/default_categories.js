@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.categoriesMap = void 0;
+exports.resolveCategoryKey = resolveCategoryKey;
 exports.categoriesMap = {
     pharma: [
         { name: "Medicines", code: "MEDICINES", desc: "General medicines and drugs" },
@@ -241,5 +242,41 @@ exports.categoriesMap = {
         { name: "Hydraulic Jack", code: "JACK", desc: "Bottle and trolley hydraulic car jacks" },
         { name: "Air Compressor", code: "COMPRESSOR", desc: "12V portable tire inflator pumps" },
         { name: "Diagnostic Scanner", code: "SCANNER", desc: "OBD2 engine code reader scanners" }
+    ],
+    retail: [
+        { name: "Apparel", code: "APPAREL", desc: "Clothing and garments" },
+        { name: "Footwear", code: "FOOTWEAR", desc: "Shoes, sandals and slippers" },
+        { name: "Electronics", code: "ELECTRONICS", desc: "Gadgets and electronic accessories" },
+        { name: "Home & Kitchen", code: "HOME_KITCHEN", desc: "Home essentials and kitchenware" },
+        { name: "Beauty & Personal Care", code: "BEAUTY", desc: "Cosmetics and personal care items" },
+        { name: "Stationery", code: "STATIONERY", desc: "Office and school supplies" },
+        { name: "Toys & Games", code: "TOYS", desc: "Toys, games and hobby items" },
+        { name: "Accessories", code: "ACCESSORIES", desc: "Bags, watches, jewelry and add-ons" },
+        { name: "Seasonal & Festive", code: "SEASONAL", desc: "Festive and seasonal merchandise" },
+        { name: "General Merchandise", code: "GENERAL", desc: "Miscellaneous retail items" }
+    ],
+    restaurant: [
+        { name: "Vegetables", code: "VEGETABLES", desc: "Fresh vegetables and greens" },
+        { name: "Fruits", code: "FRUITS", desc: "Fresh fruits" },
+        { name: "Meat & Poultry", code: "MEAT_POULTRY", desc: "Chicken, mutton and other meats" },
+        { name: "Seafood", code: "SEAFOOD", desc: "Fish and other seafood" },
+        { name: "Dairy", code: "DAIRY", desc: "Milk, cheese, butter and paneer" },
+        { name: "Grains & Staples", code: "GRAINS_STAPLES", desc: "Rice, flour, pulses and staples" },
+        { name: "Spices & Condiments", code: "SPICES_CONDIMENTS", desc: "Spices, sauces and seasonings" },
+        { name: "Beverages", code: "BEVERAGES", desc: "Soft drinks, juices and syrups" },
+        { name: "Bakery & Bread", code: "BAKERY_BREAD", desc: "Bread, buns and bakery items" },
+        { name: "Kitchen Supplies", code: "KITCHEN_SUPPLIES", desc: "Packaging, disposables and cleaning supplies" }
     ]
 };
+// Some industry slugs are aliases of a categoriesMap entry above (e.g. a
+// "kirana" registration should get the grocery category set, not a bare
+// "General" fallback, since there's no dedicated kirana-specific set).
+const industryKeyAliases = {
+    kirana: "grocery",
+};
+/** Resolves a raw industry slug (from industry_configs.industry_id) to the
+ *  categoriesMap key that should seed a new tenant/store. */
+function resolveCategoryKey(industrySlug) {
+    const slug = (industrySlug || "").toLowerCase().trim();
+    return industryKeyAliases[slug] || slug;
+}

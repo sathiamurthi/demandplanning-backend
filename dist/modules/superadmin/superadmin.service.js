@@ -3,12 +3,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DeleteUserCommandHandler = exports.DeactivateUserCommandHandler = exports.UpdateUserRoleCommandHandler = exports.CreateUserCommandHandler = exports.ManageSubscriptionCommandHandler = exports.SendMessageCommandHandler = exports.SendNotificationCommandHandler = exports.ChangePasswordCommandHandler = exports.GetUsersQueryHandler = exports.ApproveTenantCommandHandler = exports.GetTenantsQueryHandler = void 0;
+exports.DeleteUserCommandHandler = exports.ActivateUserCommandHandler = exports.DeactivateUserCommandHandler = exports.UpdateUserRoleCommandHandler = exports.CreateUserCommandHandler = exports.ManageSubscriptionCommandHandler = exports.SendMessageCommandHandler = exports.SendNotificationCommandHandler = exports.ChangePasswordCommandHandler = exports.GetUsersQueryHandler = exports.ApproveTenantCommandHandler = exports.GetTenantsQueryHandler = void 0;
 exports.hashPassword = hashPassword;
 const db_1 = require("../../config/db");
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const commandBus_1 = require("../../cqrs/commandBus");
 const queryBus_1 = require("../../cqrs/queryBus");
+const default_categories_1 = require("../../config/default_categories");
 // Utility
 async function hashPassword(password) {
     const saltRounds = 10;
@@ -38,17 +39,24 @@ exports.GetTenantsQueryHandler = GetTenantsQueryHandler;
 class ApproveTenantCommandHandler {
     async execute(c) {
         const result = await (0, db_1.query)(`UPDATE tenants SET billing_status='active', is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING *`, [c.tenantId]);
-        // Seed default categories if none exist yet
+        // Seed default categories if none exist yet — resolved from the
+        // tenant's actual linked industry (tea, pharma, grocery, auto, ...),
+        // not a hardcoded Pharma/Groceries/Parts set that made no sense for
+        // e.g. a newly-approved TeaFactory360 tenant.
         const existing = await (0, db_1.query)(`SELECT COUNT(*)::int AS cnt FROM categories WHERE tenant_id=$1`, [c.tenantId]);
         if (existing[0]?.cnt === 0) {
-            const defaults = [
-                { name: "Pharma", code: "PHARMA", desc: "Pharmaceutical & medicines" },
-                { name: "Groceries", code: "GROCERY", desc: "General groceries & food items" },
-                { name: "Parts", code: "PARTS", desc: "Spare parts & components" },
+            const ind = await (0, db_1.queryOne)(`SELECT ic.industry_id
+         FROM tenant_industries ti
+         JOIN industry_configs ic ON ic.id = ti.industry_id
+         WHERE ti.tenant_id = $1`, [c.tenantId]);
+            const industryKey = (0, default_categories_1.resolveCategoryKey)(ind?.industry_id);
+            const defaults = default_categories_1.categoriesMap[industryKey] || [
+                { name: "General", code: "GENERAL", desc: "Default category" },
             ];
-            for (const cat of defaults) {
+            for (let i = 0; i < defaults.length; i++) {
+                const cat = defaults[i];
                 await (0, db_1.query)(`INSERT INTO categories (tenant_id, name, code, description, sort_order)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`, [c.tenantId, cat.name, cat.code, cat.desc, defaults.indexOf(cat)]);
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (tenant_id, name) DO NOTHING`, [c.tenantId, cat.name, cat.code, cat.desc, i]);
             }
         }
         return result;
@@ -118,10 +126,16 @@ class UpdateUserRoleCommandHandler {
 exports.UpdateUserRoleCommandHandler = UpdateUserRoleCommandHandler;
 class DeactivateUserCommandHandler {
     async execute(c) {
-        return (0, db_1.query)(`UPDATE users SET status='inactive', updated_at=NOW() WHERE id=$1 RETURNING id, name, email, status`, [c.userId]);
+        return (0, db_1.query)(`UPDATE users SET is_active=FALSE, updated_at=NOW() WHERE id=$1 RETURNING id, first_name, last_name, email, is_active`, [c.userId]);
     }
 }
 exports.DeactivateUserCommandHandler = DeactivateUserCommandHandler;
+class ActivateUserCommandHandler {
+    async execute(c) {
+        return (0, db_1.query)(`UPDATE users SET is_active=TRUE, updated_at=NOW() WHERE id=$1 RETURNING id, first_name, last_name, email, is_active`, [c.userId]);
+    }
+}
+exports.ActivateUserCommandHandler = ActivateUserCommandHandler;
 class DeleteUserCommandHandler {
     async execute(c) {
         return (0, db_1.query)(`DELETE FROM users WHERE id=$1 RETURNING id, email`, [c.userId]);
@@ -141,4 +155,5 @@ commandBus_1.commandBus.register("superadmin.subscription.manage", new ManageSub
 commandBus_1.commandBus.register("superadmin.user.create", new CreateUserCommandHandler());
 commandBus_1.commandBus.register("superadmin.user.role.update", new UpdateUserRoleCommandHandler());
 commandBus_1.commandBus.register("superadmin.user.deactivate", new DeactivateUserCommandHandler());
+commandBus_1.commandBus.register("superadmin.user.activate", new ActivateUserCommandHandler());
 commandBus_1.commandBus.register("superadmin.user.delete", new DeleteUserCommandHandler());
