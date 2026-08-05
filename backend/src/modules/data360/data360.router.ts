@@ -462,7 +462,7 @@ data360Router.post('/ai-extract', data360Auth, async (req: D360Req, res) => {
     const cacheablePrompt = `You are reading raw OCR text from a receipt, invoice, or similar document. ${extractionRules(fields)}`;
     const prompt = `Raw text:\n"""\n${raw_snippet.slice(0, 4000)}\n"""`;
 
-    const aiRes = await callAI({ cacheablePrompt, prompt, maxTokens: 1500, jsonResponse: true, preferredOrder: costEffectiveOrder() });
+    const aiRes = await callAI({ cacheablePrompt, prompt, maxTokens: 4096, jsonResponse: true, preferredOrder: costEffectiveOrder() });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
@@ -502,7 +502,7 @@ data360Router.post('/ai-extract-image', data360Auth, async (req: D360Req, res) =
     const cacheablePrompt = `This image is a receipt, invoice, or similar document. Read it directly. ${extractionRules(fields)}`;
     const prompt = `Read the attached image now and return the JSON.`;
 
-    const aiRes = await callAI({ cacheablePrompt, prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 1500, jsonResponse: true, preferredOrder: costEffectiveOrder() });
+    const aiRes = await callAI({ cacheablePrompt, prompt, imageBase64: image_base64, mimeType: mediaType, maxTokens: 4096, jsonResponse: true, preferredOrder: costEffectiveOrder() });
     await logAiUsage(req.d360User.sub, batch_label, file_label, aiRes);
     const result = parseExtractionResponse(aiRes.text, fields);
     if (!result) {
