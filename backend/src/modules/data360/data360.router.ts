@@ -779,6 +779,64 @@ data360Router.post('/school/study-guide-image', data360Auth, async (req: D360Req
   }
 });
 
+const SCHOOL_CHAPTER_GENERATE_PROMPT = `You are an expert school teacher creating a comprehensive study pack for a specific subject and chapter. The student's class/grade and education board are given below the instructions, along with the chapter's name and subject.
+
+Produce a single JSON object — a "Study Pack" — with this exact structure:
+{
+  "chapter_title": string,
+  "subject": string,
+  "story_telling_explanation": string,
+  "core_concepts": [ { "concept": string, "simple_explanation": string, "why_it_matters": string } ],
+  "key_terms": [ { "term": string, "meaning": string } ],
+  "study_plan": [ { "step": number, "focus": string, "time_minutes": number, "activity": string } ],
+  "quick_reference": string[],
+  "practice_questions": [ { "question": string, "hint": string, "difficulty": "easy" | "medium" | "hard" } ],
+  "common_mistakes": string[]
+}
+
+FOLLOW THESE RULES EXACTLY:
+1. "story_telling_explanation": Write a compelling, simple story-like introduction that explains the core concept of the chapter in an easy-to-understand way.
+2. "practice_questions": You MUST generate EXACTLY 20 questions. These questions should follow the exam pattern of the specified education board (e.g. CBSE objective, short answer, and long answer questions).
+3. "quick_reference": Provide the most important formulas, dates, facts, or definitions.
+4. Do not invent hallucinatory facts, but rely on your internal knowledge of standard school curricula for the given subject and chapter.
+5. Return ONLY valid JSON — no markdown fences, no commentary before or after.`;
+
+data360Router.post('/school/generate-chapter-guide', data360Auth, async (req: D360Req, res) => {
+  try {
+    const { class_level, board, subject, chapter_name } = req.body as {
+      class_level?: string; board?: string; subject?: string; chapter_name?: string;
+    };
+    if (!class_level?.trim()) { fail(res, 'class_level is required'); return; }
+    if (!board?.trim()) { fail(res, 'board is required'); return; }
+    if (!subject?.trim()) { fail(res, 'subject is required'); return; }
+    if (!chapter_name?.trim()) { fail(res, 'chapter_name is required'); return; }
+
+    const discriminator = `${class_level.trim().toLowerCase()}|${board.trim().toLowerCase()}|${subject.trim().toLowerCase()}|${chapter_name.trim().toLowerCase()}`;
+    const cacheKey = computeCacheKey('school-generate-chapter', '', discriminator);
+    const cached = await getCachedResult(req.d360User.sub, cacheKey);
+    if (cached) {
+      await logAiUsage(req.d360User.sub, 'School', chapter_name, { provider: cached.provider, model: cached.model, inputTokens: 0, outputTokens: 0 }, 1, true);
+      ok(res, { data: cached.result, provider: cached.provider, cached: true });
+      return;
+    }
+
+    const prompt = buildStudyGuideDynamicPrompt(class_level, board, subject,
+      `Chapter Name: ${chapter_name}\n\nBased on your knowledge of the curriculum, generate the Study Pack JSON.`);
+      
+    const aiRes = await callAI({ cacheablePrompt: SCHOOL_CHAPTER_GENERATE_PROMPT, prompt, maxTokens: 8000, jsonResponse: true, preferredOrder: costEffectiveOrder() });
+    await logAiUsage(req.d360User.sub, 'School', chapter_name, aiRes);
+    const result = parseArbitraryJson(aiRes.text);
+    if (!result) {
+      fail(res, \`AI returned invalid JSON — please try again. Provider: \${aiRes.provider}. Raw response: \${aiRes.text.slice(0, 300)}\`, 502);
+      return;
+    }
+    await setCachedResult(req.d360User.sub, cacheKey, 'school-generate-chapter', result, aiRes.provider, aiRes.model);
+    ok(res, { data: result, provider: aiRes.provider, cached: false });
+  } catch (e: any) {
+    fail(res, e.message, 500);
+  }
+});
+
 // ── AI USAGE (Settings — cost/token tracking) ─────────────────────────────
 // Two views over the same log: `files` is one row per AI call (what the
 // caller asked for — "total tokens for each file"), `batches` rolls that up
