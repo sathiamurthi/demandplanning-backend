@@ -357,7 +357,7 @@ export const salesRouter = Router({ mergeParams: true });
 
 const SaleItemSchema = z.object({
   itemId: z.string().uuid(), qtySold: z.number().positive(),
-  unitId: z.string().uuid().optional().nullable(), unitPrice: z.number().positive(),
+  unitId: z.string().optional().nullable(), unitPrice: z.number().positive(),
   discountPct: z.number().min(0).max(100).optional(),
   batchNumber: z.string().optional(), expiryDate: z.string().optional(),
   gstRate: z.number().optional(),
