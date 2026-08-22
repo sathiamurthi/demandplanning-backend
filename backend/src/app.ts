@@ -139,6 +139,7 @@ app.get('/v1/debug/commands', authMiddleware, async (req, res) => {
   });
 });
 
+app.get('/pingtest', (req, res) => res.send('pong123'));
 app.use('/v1', healthRouter);
 app.use('/v1/api-docs', swaggerRouter);
 
