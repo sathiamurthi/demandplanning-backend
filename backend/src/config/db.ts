@@ -285,6 +285,16 @@ function getMigrations() {
           ('Tonne','tn','weight'),('Litre','L','volume'),('Millilitre','mL','volume'),
           ('Metre','m','length'),('Centimetre','cm','length')
         ON CONFLICT DO NOTHING;
+        INSERT INTO unit_types (name, symbol, category) VALUES
+          ('Tablet', 'tab', 'count'), ('Capsule', 'cap', 'count'), ('Bottle', 'btl', 'count'),
+          ('Tube', 'tube', 'count'), ('Vial', 'vial', 'count'), ('Ampoule', 'amp', 'count'),
+          ('Liter', 'L', 'volume'), ('Milliliter', 'mL', 'volume'), ('Packet', 'pkt', 'count'),
+          ('Pouch', 'pch', 'count'), ('Bunch', 'bunch', 'count'), ('Set', 'set', 'count'),
+          ('Kit', 'kit', 'count'), ('Pair', 'pair', 'count'), ('Gallon', 'gal', 'volume'),
+          ('Crate', 'crate', 'count'), ('Pallet', 'plt', 'count'), ('Bag', 'bag', 'count'),
+          ('Sack', 'sack', 'count'), ('Drum', 'drum', 'count')
+        ON CONFLICT DO NOTHING;
+
       `
     },
     {
@@ -585,7 +595,11 @@ function getMigrations() {
     {
       name: '011_items',
       sql: `
-        CREATE TABLE IF NOT EXISTS items (
+        
+        ALTER TABLE unit_types ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_name_key;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_symbol_key;
+CREATE TABLE IF NOT EXISTS items (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
           store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
           tenant_id UUID NOT NULL REFERENCES tenants(id),

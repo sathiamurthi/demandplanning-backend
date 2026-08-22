@@ -160,7 +160,7 @@ app.use('/v1/ride360',    ride360Router);
 app.use('/v1/saferide360', saferide360Router);
 app.use('/v1/tea-agent',  teaAgentAuthRouter);
 app.use('/v1/auth',       authRouter);
-app.use('/v1/units',      unitsRouter);
+app.use('/v1/units',      authMiddleware, unitsRouter);
 app.use('/v1/industries', industryRouter);
 app.use('/v1/tenants/:tenantId/stores',dashboardRouter)
 

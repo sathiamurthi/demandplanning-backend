@@ -19,7 +19,7 @@ const fail = (res: any, msg: string) =>
 router.get('/', async (_req, res) => {
   try {
     const units = await query(
-      `SELECT * FROM unit_types ORDER BY name`
+      `SELECT * FROM unit_types WHERE tenant_id IS NULL OR tenant_id = $1 ORDER BY name", [(req as any).user.tenantId]`
     );
     ok(res, units);
   } catch (e: any) {
@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
   try {
     const { name, symbol, category, is_active } = req.body;
     const result = await query(
-      `INSERT INTO unit_types (name, symbol, category, is_active)
+      `INSERT INTO unit_types (name, symbol, category, is_active, tenant_id)
        VALUES ($1, $2, $3, $4) RETURNING *`,
       [name, symbol, category || 'count', is_active ?? true]
     );
