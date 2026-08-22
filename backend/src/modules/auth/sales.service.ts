@@ -45,14 +45,21 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
 
     return withTransaction(async (client) => {
       // 1. Validate all items exist and have sufficient stock
-      const stockUpdates: Array<{ itemId: string; newStock: number; name: string }> = [];
+      const stockUpdates: Array<{ itemId: string; newStock: number; name: string, stockDeduction: number }> = [];
       let subtotal = 0;
       let totalGst = 0;
 
       for (const si of cmd.items) {
         const item = await client.query('SELECT * FROM items WHERE id=$1 AND store_id=$2 AND is_active=TRUE',[si.itemId,cmd.storeId]).then(r=>r.rows[0]);
         if (!item) throw new Error(`Item ${si.itemId} not found`);
-        if (parseFloat(item.current_stock) < si.qtySold) throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}`);
+        
+        // Calculate stock deduction based on unit
+        let stockDeduction = si.qtySold;
+        if (si.unitId === item.secondary_unit_id && item.units_per_secondary && parseFloat(item.units_per_secondary) > 0) {
+           stockDeduction = si.qtySold / parseFloat(item.units_per_secondary);
+        }
+
+        if (parseFloat(item.current_stock) < stockDeduction) throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}, trying to sell equivalent of ${stockDeduction} primary units`);
         const discount = (si.unitPrice * si.qtySold * (si.discountPct||0)) / 100;
         // unitPrice is the selling/MRP price, GST-INCLUSIVE (standard Indian
         // retail practice) — so the line's payable amount is fixed at
@@ -64,7 +71,7 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
         const lineSubtotal = lineInclusive - lineGst;
         subtotal += lineSubtotal;
         totalGst += lineGst;
-        stockUpdates.push({ itemId: si.itemId, newStock: parseFloat(item.current_stock) - si.qtySold, name: item.name });
+        stockUpdates.push({ itemId: si.itemId, newStock: parseFloat(item.current_stock) - stockDeduction, stockDeduction, name: item.name });
       }
 
       const extraDiscount = cmd.discountAmount || 0;
@@ -109,7 +116,7 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
           `INSERT INTO stock_ledger (item_id,store_id,tenant_id,movement_type,reference_id,reference_type,qty_before,qty_change,qty_after,unit_id,unit_price,created_by)
            VALUES ($1,$2,$3,'sale',$4,'sale',$5,$6,$7,$8,$9,$10)`,
           [si.itemId,cmd.storeId,cmd.tenantId,sale.id,
-           parseFloat(item.current_stock),-(si.qtySold),su.newStock,unitId,si.unitPrice,cmd.createdBy]
+           parseFloat(item.current_stock),-(su.stockDeduction),su.newStock,item.primary_unit_id,si.unitPrice,cmd.createdBy]
         );
         // Update stock
         await client.query('UPDATE items SET current_stock=$1, updated_at=NOW() WHERE id=$2',[su.newStock,si.itemId]);
