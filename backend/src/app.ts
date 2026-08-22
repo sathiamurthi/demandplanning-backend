@@ -18,6 +18,7 @@ import { authRouter, authMiddleware } from './modules/auth/auth.service';
 import { tenantRouter }              from './modules/auth/tenants.service';
 import { storeRouter }               from './modules/auth/stores.service';
 import { itemRouter }                from './modules/auth/items.service';
+import { accountingRouter }          from './modules/auth/accounting.service';
 import { salesRouter }               from './modules/auth/sales.service';
 import { couponsRouter, superadminCouponsRouter } from './modules/auth/coupons.service';
 // ── Dedicated modules ─────────────────────────────────────────
@@ -34,6 +35,7 @@ import { suppliersRouter }            from './modules/auth/suppliers.service';
 import { purchaseOrdersRouter }      from './modules/auth/purchase-orders.service';
 import { healthRouter } from './modules/auth/health';
 import { publicRouter } from './modules/auth/public.service';
+import { schoolRouter } from './modules/auth/school.service';
 
 // ── Superadmin module ─────────────────────────────────────────
 import superadminRouter from './modules/superadmin/superadmin.controller';
@@ -173,12 +175,14 @@ app.use('/v1/tenants/:tenantId/categories',           categoryRouter);
 app.use('/v1/tenants/:tenantId/suppliers',            suppliersRouter);
 app.use('/v1/tenants/:tenantId/purchase-orders',     purchaseOrdersRouter);
 app.use('/v1/tenants/:tenantId/stores/:storeId/items',   itemRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accountingRouter);
 app.use('/v1/tenants',                                tenantRouter);           // ← AFTER specifics
 app.use('/v1/stores/:storeId/sales',   authMiddleware, salesRouter);
 app.use('/v1/stores/:storeId/report',          authMiddleware, aiRouter);
 app.use('/v1/tenants/:tenantId/ai-settings',   aiSettingsRouter);
 app.use('/v1/alerts',                  alertRouter);
 app.use('/v1/billing',                 billingRouter);
+app.use('/v1/school',                  schoolRouter);
 // app.use('/v1/dashboard',               dashboardRouter);
 
 // ── TEA MODULE ───────────────────────────────────────────────
