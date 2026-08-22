@@ -179,6 +179,9 @@ app.use('/v1/tenants/:tenantId/suppliers',            suppliersRouter);
 app.use('/v1/tenants/:tenantId/purchase-orders',     purchaseOrdersRouter);
 app.use('/v1/tenants/:tenantId/stores/:storeId/items',   itemRouter);
 app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accountingRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId', crmRouter); // Provides /leads and /quotations
+app.use('/v1/tenants/:tenantId/stores/:storeId/sales-orders', salesOrdersRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/sales', authMiddleware, salesRouter);
 app.use('/v1/tenants',                                tenantRouter);           // ← AFTER specifics
 app.use('/v1/stores/:storeId/sales',   authMiddleware, salesRouter);
 app.use('/v1/stores/:storeId/report',          authMiddleware, aiRouter);

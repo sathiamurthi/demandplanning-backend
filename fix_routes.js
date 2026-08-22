@@ -1,16 +1,12 @@
 const fs = require('fs');
+let c = fs.readFileSync('backend/src/app.ts', 'utf8');
 
-function fixFile(filePath) {
-  let c = fs.readFileSync(filePath, 'utf8');
-  c = c.replace(/import \{ pool \} from '\.\.\/\.\.\/\.\.\/config\/db';/, "import { pool } from '../../config/db';");
-  c = c.replace(/import \{ authMiddleware, tenantContextMiddleware \} from '\.\.\/\.\.\/\.\.\/middleware\/auth\.middleware';/, "import { authMiddleware, tenantContextMiddleware } from './auth.service';");
-  
-  c = c.replace(/req\.tenantId/g, "(req as any).tenantId");
-  c = c.replace(/req\.user\?/g, "(req as any).user?");
-  
-  fs.writeFileSync(filePath, c);
-}
+const injection = `app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accountingRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/leads', crmRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/quotations', crmRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/sales-orders', salesOrdersRouter);
+app.use('/v1/tenants/:tenantId/stores/:storeId/sales', authMiddleware, salesRouter);`;
 
-fixFile('backend/src/modules/auth/crm.service.ts');
-fixFile('backend/src/modules/auth/sales-orders.service.ts');
-console.log('Fixed imports and typings');
+c = c.replace(`app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accountingRouter);`, injection);
+
+fs.writeFileSync('backend/src/app.ts', c);
