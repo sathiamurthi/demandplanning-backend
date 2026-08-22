@@ -6,6 +6,11 @@ export interface DefaultCategory {
 
 export const categoriesMap: Record<string, DefaultCategory[]> = {
   pharma: [
+    { name: "Schedule H", code: "SCHEDULE_H", desc: "Prescription drugs under Schedule H" },
+    { name: "Schedule G", code: "SCHEDULE_G", desc: "Medical supervision required drugs under Schedule G" },
+    { name: "Narcotic", code: "NARCOTIC", desc: "Narcotic and psychotropic substances" },
+    { name: "Food suppliment", code: "FOOD_SUPPLEMENT", desc: "Dietary and food supplements" },
+    { name: "Surgical", code: "SURGICAL", desc: "Surgical items and instruments" },
     { name: "Medicines", code: "MEDICINES", desc: "General medicines and drugs" },
     { name: "Cardiac Medicines", code: "CARDIAC", desc: "Cardiovascular drugs and treatments" },
     { name: "Diabetes Care", code: "DIABETES", desc: "Insulin and blood glucose control" },

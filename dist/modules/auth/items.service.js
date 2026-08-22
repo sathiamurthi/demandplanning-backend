@@ -45,6 +45,7 @@ const queryBus_1 = require("../../cqrs/queryBus");
 const auth_service_1 = require("./auth.service");
 const roleGuard_1 = require("../../core/guards/roleGuard");
 const requestlogger_1 = require("../middleware/requestlogger");
+const gemini_service_1 = require("./gemini.service");
 function ok(res, data, status = 200) {
     res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
 }
@@ -298,11 +299,13 @@ class ListItemsQueryHandler {
         const offset = (q.page - 1) * q.limit;
         vals.push(q.limit, offset);
         const items = await (0, db_1.query)(`SELECT i.*, ut.symbol as unit_symbol, ut.name as unit_name,
+              sut.symbol as secondary_unit_symbol,
               c.name as category_name, s.name as supplier_name,
               CASE WHEN i.current_stock <= i.reorder_level THEN true ELSE false END as is_low_stock,
               CASE WHEN i.expiry_date <= NOW() + INTERVAL '30 days' AND i.expiry_date IS NOT NULL THEN true ELSE false END as is_expiring
        FROM items i
        LEFT JOIN unit_types ut ON ut.id=i.primary_unit_id
+       LEFT JOIN unit_types sut ON sut.id=i.secondary_unit_id
        LEFT JOIN categories c ON c.id=i.category_id
        LEFT JOIN suppliers s ON s.id=i.supplier_id
        ${where} ORDER BY i.${sortField} ${sortDir} LIMIT $${i} OFFSET $${i + 1}`, vals);
@@ -431,6 +434,50 @@ exports.itemRouter.get('/', async (req, res) => {
             sortDir: req.query.sortDir,
         });
         ok(res, r.items);
+    }
+    catch (e) {
+        fail(res, e.message);
+    }
+});
+exports.itemRouter.post('/import-invoice-ai', (0, roleGuard_1.requireMinRole)('manager'), async (req, res) => {
+    try {
+        const { image_base64, mime_type } = req.body;
+        if (!image_base64)
+            return fail(res, 'image_base64 is required');
+        const tenantId = req.user.tenantId;
+        const categories = await (0, db_1.query)('SELECT id, name FROM categories WHERE tenant_id=$1', [tenantId]);
+        const catList = categories.map(c => `- ID: ${c.id}, Name: ${c.name}`).join('\n');
+        const prompt = `Extract all pharmaceutical or inventory items from this invoice image.
+Return a JSON array of objects, where each object has these exact keys:
+- name (string)
+- currentStock (number, quantity)
+- mrp (number)
+- purchasePrice (number)
+- batchNumber (string)
+- expiryDate (string, format YYYY-MM-DD or YYYY-MM)
+- categoryId (string, strictly matching the best category ID from the list below, or null if none match)
+- categoryName (string, the name of the matched category, or null)
+
+Available categories:
+${catList}
+
+If a field is missing, use null or an appropriate default. Do not wrap the JSON in markdown code blocks, just return the raw JSON array.`;
+        const aiRes = await (0, gemini_service_1.callGemini)({
+            prompt,
+            imageBase64: image_base64,
+            mimeType: mime_type,
+            responseMimeType: 'application/json'
+        });
+        let parsed;
+        try {
+            parsed = JSON.parse(aiRes.text);
+        }
+        catch (err) {
+            // Fallback for markdown
+            const match = aiRes.text.match(/\`\`\`(?:json)?([\s\S]*?)\`\`\`/);
+            parsed = match ? JSON.parse(match[1]) : [];
+        }
+        ok(res, Array.isArray(parsed) ? parsed : []);
     }
     catch (e) {
         fail(res, e.message);
@@ -577,6 +624,7 @@ exports.itemRouter.post('/import', (0, roleGuard_1.requireMinRole)('manager'), a
             sku: String(r.sku ?? '').trim() || undefined,
             barcode: String(r.barcode ?? '').trim() || undefined,
             brand: String(r.brand ?? '').trim() || undefined,
+            categoryId: String(r.categoryId ?? '').trim() || undefined,
             description: String(r.description ?? '').trim() || undefined,
             currentStock: parseNum(r.currentStock) ?? 0,
             reorderLevel: parseNum(r.reorderLevel) ?? 5,

@@ -57,6 +57,9 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
         let stockDeduction = si.qtySold;
         if (si.unitId === item.secondary_unit_id && item.units_per_secondary && parseFloat(item.units_per_secondary) > 0) {
            stockDeduction = si.qtySold / parseFloat(item.units_per_secondary);
+        } else if (si.unitId === 'piece' && !item.secondary_unit_id) {
+           // Fallback for POS single item sale if secondary unit is not explicitly configured
+           stockDeduction = si.qtySold / 10.0;
         }
 
         if (parseFloat(item.current_stock) < stockDeduction) throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}, trying to sell equivalent of ${stockDeduction} primary units`);
@@ -101,7 +104,11 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
         const lineGst = (lineInclusive * gstRate) / (100 + gstRate);
         const lineSubtotal = lineInclusive - lineGst;
         const lineTotal = lineInclusive;
-        const unitId = si.unitId || item.primary_unit_id;
+        let unitId = si.unitId || item.primary_unit_id;
+        if (unitId === 'piece') {
+           const pc = await client.query('SELECT id FROM unit_types WHERE symbol=$1', ['pc']).then(r=>r.rows[0]);
+           unitId = pc ? pc.id : item.primary_unit_id;
+        }
 
         const [li] = await client.query(
           `INSERT INTO sale_items (sale_id,item_id,qty_sold,unit_id,unit_price,discount_pct,discount_amount,gst_rate,gst_amount,line_total,batch_number,expiry_date)

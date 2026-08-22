@@ -39,8 +39,13 @@ class CreateSaleCommandHandler {
                 const item = await client.query('SELECT * FROM items WHERE id=$1 AND store_id=$2 AND is_active=TRUE', [si.itemId, cmd.storeId]).then(r => r.rows[0]);
                 if (!item)
                     throw new Error(`Item ${si.itemId} not found`);
-                if (parseFloat(item.current_stock) < si.qtySold)
-                    throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}`);
+                // Calculate stock deduction based on unit
+                let stockDeduction = si.qtySold;
+                if (si.unitId === item.secondary_unit_id && item.units_per_secondary && parseFloat(item.units_per_secondary) > 0) {
+                    stockDeduction = si.qtySold / parseFloat(item.units_per_secondary);
+                }
+                if (parseFloat(item.current_stock) < stockDeduction)
+                    throw new Error(`Insufficient stock for "${item.name}": available ${item.current_stock}, trying to sell equivalent of ${stockDeduction} primary units`);
                 const discount = (si.unitPrice * si.qtySold * (si.discountPct || 0)) / 100;
                 // unitPrice is the selling/MRP price, GST-INCLUSIVE (standard Indian
                 // retail practice) — so the line's payable amount is fixed at
@@ -52,7 +57,7 @@ class CreateSaleCommandHandler {
                 const lineSubtotal = lineInclusive - lineGst;
                 subtotal += lineSubtotal;
                 totalGst += lineGst;
-                stockUpdates.push({ itemId: si.itemId, newStock: parseFloat(item.current_stock) - si.qtySold, name: item.name });
+                stockUpdates.push({ itemId: si.itemId, newStock: parseFloat(item.current_stock) - stockDeduction, stockDeduction, name: item.name });
             }
             const extraDiscount = cmd.discountAmount || 0;
             // subtotal + totalGst reconstructs the same sum of line-inclusive
@@ -84,7 +89,7 @@ class CreateSaleCommandHandler {
                 const su = stockUpdates.find(s => s.itemId === si.itemId);
                 await client.query(`INSERT INTO stock_ledger (item_id,store_id,tenant_id,movement_type,reference_id,reference_type,qty_before,qty_change,qty_after,unit_id,unit_price,created_by)
            VALUES ($1,$2,$3,'sale',$4,'sale',$5,$6,$7,$8,$9,$10)`, [si.itemId, cmd.storeId, cmd.tenantId, sale.id,
-                    parseFloat(item.current_stock), -(si.qtySold), su.newStock, unitId, si.unitPrice, cmd.createdBy]);
+                    parseFloat(item.current_stock), -(su.stockDeduction), su.newStock, item.primary_unit_id, si.unitPrice, cmd.createdBy]);
                 // Update stock
                 await client.query('UPDATE items SET current_stock=$1, updated_at=NOW() WHERE id=$2', [su.newStock, si.itemId]);
                 // Low stock alert
@@ -102,6 +107,31 @@ class CreateSaleCommandHandler {
              FROM sale_items sli JOIN sales sl2 ON sl2.id=sli.sale_id
              WHERE sli.item_id=$1 AND sl2.store_id=$2 AND sl2.sale_date >= NOW() - INTERVAL '3 months'
            ) WHERE id=$1`, [si.itemId, cmd.storeId])));
+            // Post to Accounting Journal if Phase 1 COA is seeded
+            try {
+                const revAcc = await client.query("SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND store_id=$2 AND name='Sales Revenue' LIMIT 1", [cmd.tenantId, cmd.storeId]);
+                const cashAcc = await client.query("SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND store_id=$2 AND name='Cash' LIMIT 1", [cmd.tenantId, cmd.storeId]);
+                if (revAcc.rows.length && cashAcc.rows.length) {
+                    const { postJournalEntry } = require('./accounting.service');
+                    await postJournalEntry(client, {
+                        tenantId: cmd.tenantId,
+                        storeId: cmd.storeId,
+                        userId: cmd.createdBy,
+                        voucher_no: `SV-${sale.sale_number}`,
+                        voucher_type: 'Sales',
+                        entry_date: new Date(sale.sale_date).toISOString().split('T')[0],
+                        narrative: `POS Sale ${sale.sale_number}`,
+                        lines: [
+                            { account_id: cashAcc.rows[0].id, debit: total, credit: 0, narrative: `Cash collected for Sale ${sale.sale_number}` },
+                            { account_id: revAcc.rows[0].id, debit: 0, credit: total, narrative: `Revenue for Sale ${sale.sale_number}` }
+                        ]
+                    });
+                }
+            }
+            catch (err) {
+                // Log but don't fail sale if accounting fails during Phase 1 rollout
+                console.error('Failed to post journal entry for sale', err);
+            }
             return { sale, lineItems, stockUpdates };
         });
     }

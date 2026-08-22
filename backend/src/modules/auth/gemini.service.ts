@@ -7,6 +7,8 @@ export async function callGemini(params: {
   responseMimeType?: string;
   responseSchema?: any;
   maxTokens?: number;
+  imageBase64?: string;
+  mimeType?: string;
 }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -18,7 +20,10 @@ export async function callGemini(params: {
 
   const response = await ai.models.generateContent({
     model: model,
-    contents: params.prompt,
+    contents: params.imageBase64 && params.mimeType ? [
+      params.prompt,
+      { inlineData: { data: params.imageBase64, mimeType: params.mimeType } }
+    ] : params.prompt,
     config: {
       maxOutputTokens: params.maxTokens,
       responseMimeType: params.responseMimeType,

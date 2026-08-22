@@ -14,7 +14,10 @@ async function callGemini(params) {
     const model = (0, exports.getGeminiModel)();
     const response = await ai.models.generateContent({
         model: model,
-        contents: params.prompt,
+        contents: params.imageBase64 && params.mimeType ? [
+            params.prompt,
+            { inlineData: { data: params.imageBase64, mimeType: params.mimeType } }
+        ] : params.prompt,
         config: {
             maxOutputTokens: params.maxTokens,
             responseMimeType: params.responseMimeType,

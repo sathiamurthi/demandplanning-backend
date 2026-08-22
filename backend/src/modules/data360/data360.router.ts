@@ -827,7 +827,7 @@ data360Router.post('/school/generate-chapter-guide', data360Auth, async (req: D3
     await logAiUsage(req.d360User.sub, 'School', chapter_name, aiRes);
     const result = parseArbitraryJson(aiRes.text);
     if (!result) {
-      fail(res, \`AI returned invalid JSON — please try again. Provider: \${aiRes.provider}. Raw response: \${aiRes.text.slice(0, 300)}\`, 502);
+      fail(res, `AI returned invalid JSON — please try again. Provider: ${aiRes.provider}. Raw response: ${aiRes.text.slice(0, 300)}`, 502);
       return;
     }
     await setCachedResult(req.d360User.sub, cacheKey, 'school-generate-chapter', result, aiRes.provider, aiRes.model);

@@ -55,6 +55,7 @@ const auth_service_1 = require("./modules/auth/auth.service");
 const tenants_service_1 = require("./modules/auth/tenants.service");
 const stores_service_1 = require("./modules/auth/stores.service");
 const items_service_1 = require("./modules/auth/items.service");
+const accounting_service_1 = require("./modules/auth/accounting.service");
 const sales_service_1 = require("./modules/auth/sales.service");
 const coupons_service_1 = require("./modules/auth/coupons.service");
 // ── Dedicated modules ─────────────────────────────────────────
@@ -69,6 +70,7 @@ const suppliers_service_1 = require("./modules/auth/suppliers.service");
 const purchase_orders_service_1 = require("./modules/auth/purchase-orders.service");
 const health_1 = require("./modules/auth/health");
 const public_service_1 = require("./modules/auth/public.service");
+const school_service_1 = require("./modules/auth/school.service");
 // ── Superadmin module ─────────────────────────────────────────
 const superadmin_controller_1 = __importDefault(require("./modules/superadmin/superadmin.controller"));
 require("./modules/superadmin/superadmin.service");
@@ -167,6 +169,7 @@ exports.app.get('/v1/debug/commands', auth_service_1.authMiddleware, async (req,
         //queries:  queryBus.getRegisteredQueries(),
     });
 });
+exports.app.get('/pingtest', (req, res) => res.send('pong123'));
 exports.app.use('/v1', health_1.healthRouter);
 exports.app.use('/v1/api-docs', swagger_1.swaggerRouter);
 exports.app.use('/v1/ext/tenant', registertenant_router_1.default);
@@ -196,12 +199,14 @@ exports.app.use('/v1/tenants/:tenantId/categories', categories_service_1.categor
 exports.app.use('/v1/tenants/:tenantId/suppliers', suppliers_service_1.suppliersRouter);
 exports.app.use('/v1/tenants/:tenantId/purchase-orders', purchase_orders_service_1.purchaseOrdersRouter);
 exports.app.use('/v1/tenants/:tenantId/stores/:storeId/items', items_service_1.itemRouter);
+exports.app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accounting_service_1.accountingRouter);
 exports.app.use('/v1/tenants', tenants_service_1.tenantRouter); // ← AFTER specifics
 exports.app.use('/v1/stores/:storeId/sales', auth_service_1.authMiddleware, sales_service_1.salesRouter);
 exports.app.use('/v1/stores/:storeId/report', auth_service_1.authMiddleware, ai_service_1.aiRouter);
 exports.app.use('/v1/tenants/:tenantId/ai-settings', ai_service_1.aiSettingsRouter);
 exports.app.use('/v1/alerts', alerts_service_1.alertRouter);
 exports.app.use('/v1/billing', billing_service_1.billingRouter);
+exports.app.use('/v1/school', school_service_1.schoolRouter);
 // app.use('/v1/dashboard',               dashboardRouter);
 // ── TEA MODULE ───────────────────────────────────────────────
 exports.app.use('/v1/tenants/:tenantId/tea', tea_service_1.teaRouter);
@@ -220,7 +225,8 @@ if (process.env.LOG_API_CALLS === 'true') {
     });
 }
 // ── 404 handler ──────────────────────────────────────────────
-exports.app.use((_req, res) => {
+exports.app.use((req, res, next) => {
+    console.error(`404 Endpoint Not Found: ${req.method} ${req.originalUrl}`);
     res.status(404).json({ success: false, error: 'Endpoint not found', timestamp: new Date().toISOString() });
 });
 // ── Global error handler ─────────────────────────────────────
