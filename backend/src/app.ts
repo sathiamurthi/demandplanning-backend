@@ -18,6 +18,8 @@ import { authRouter, authMiddleware } from './modules/auth/auth.service';
 import { tenantRouter }              from './modules/auth/tenants.service';
 import { storeRouter }               from './modules/auth/stores.service';
 import { itemRouter }                from './modules/auth/items.service';
+import { crmRouter }                 from './modules/auth/crm.service';
+import { salesOrdersRouter }         from './modules/auth/sales-orders.service';
 import { accountingRouter }          from './modules/auth/accounting.service';
 import { salesRouter }               from './modules/auth/sales.service';
 import { couponsRouter, superadminCouponsRouter } from './modules/auth/coupons.service';
