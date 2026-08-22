@@ -451,6 +451,53 @@ itemRouter.get('/', async (req, res) => {
   } catch (e: any) { fail(res, e.message); }
 });
 
+itemRouter.post('/import-invoice-ai', requireMinRole('manager'), async (req, res) => {
+  try {
+    const { image_base64, mime_type } = req.body;
+    if (!image_base64) return fail(res, 'image_base64 is required');
+    
+    const tenantId = (req as any).user.tenantId;
+    const categories = await query<any>('SELECT id, name FROM categories WHERE tenant_id=$1', [tenantId]);
+    const catList = categories.map(c => `- ID: ${c.id}, Name: ${c.name}`).join('\n');
+
+    const prompt = `Extract all pharmaceutical or inventory items from this invoice image.
+Return a JSON array of objects, where each object has these exact keys:
+- name (string)
+- currentStock (number, quantity)
+- mrp (number)
+- purchasePrice (number)
+- batchNumber (string)
+- expiryDate (string, format YYYY-MM-DD or YYYY-MM)
+- categoryId (string, strictly matching the best category ID from the list below, or null if none match)
+- categoryName (string, the name of the matched category, or null)
+
+Available categories:
+${catList}
+
+If a field is missing, use null or an appropriate default. Do not wrap the JSON in markdown code blocks, just return the raw JSON array.`;
+
+    const aiRes = await callGemini({
+      prompt,
+      imageBase64: image_base64,
+      mimeType: mime_type,
+      responseMimeType: 'application/json'
+    });
+    
+    let parsed;
+    try {
+      parsed = JSON.parse(aiRes.text);
+    } catch(err) {
+      // Fallback for markdown
+      const match = aiRes.text.match(/\`\`\`(?:json)?([\s\S]*?)\`\`\`/);
+      parsed = match ? JSON.parse(match[1]) : [];
+    }
+    
+    ok(res, Array.isArray(parsed) ? parsed : []);
+  } catch (e: any) {
+    fail(res, e.message);
+  }
+});
+
 itemRouter.get('/low-stock', async (req, res) => {
   try {
     const storeId = (req.params as any).storeId;
@@ -611,52 +658,7 @@ itemRouter.post('/import', requireMinRole('manager'), async (req, res) => {
   } catch (e: any) { fail(res, e.message); }
 });
 
-itemRouter.post('/import-invoice-ai', requireMinRole('manager'), async (req, res) => {
-  try {
-    const { image_base64, mime_type } = req.body;
-    if (!image_base64) return fail(res, 'image_base64 is required');
-    
-    const tenantId = (req as any).user.tenantId;
-    const categories = await query<any>('SELECT id, name FROM categories WHERE tenant_id=$1', [tenantId]);
-    const catList = categories.map(c => `- ID: ${c.id}, Name: ${c.name}`).join('\n');
 
-    const prompt = `Extract all pharmaceutical or inventory items from this invoice image.
-Return a JSON array of objects, where each object has these exact keys:
-- name (string)
-- currentStock (number, quantity)
-- mrp (number)
-- purchasePrice (number)
-- batchNumber (string)
-- expiryDate (string, format YYYY-MM-DD or YYYY-MM)
-- categoryId (string, strictly matching the best category ID from the list below, or null if none match)
-- categoryName (string, the name of the matched category, or null)
-
-Available categories:
-${catList}
-
-If a field is missing, use null or an appropriate default. Do not wrap the JSON in markdown code blocks, just return the raw JSON array.`;
-
-    const aiRes = await callGemini({
-      prompt,
-      imageBase64: image_base64,
-      mimeType: mime_type,
-      responseMimeType: 'application/json'
-    });
-    
-    let parsed;
-    try {
-      parsed = JSON.parse(aiRes.text);
-    } catch(err) {
-      // Fallback for markdown
-      const match = aiRes.text.match(/\`\`\`(?:json)?([\s\S]*?)\`\`\`/);
-      parsed = match ? JSON.parse(match[1]) : [];
-    }
-    
-    ok(res, Array.isArray(parsed) ? parsed : []);
-  } catch (e: any) {
-    fail(res, e.message);
-  }
-});
 
 itemRouter.get('/:itemId/ledger', async (req, res) => {
   try {
