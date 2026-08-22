@@ -145,6 +145,32 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
         )
       ));
 
+      // Post to Accounting Journal if Phase 1 COA is seeded
+      try {
+        const revAcc = await client.query("SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND store_id=$2 AND name='Sales Revenue' LIMIT 1", [cmd.tenantId, cmd.storeId]);
+        const cashAcc = await client.query("SELECT id FROM chart_of_accounts WHERE tenant_id=$1 AND store_id=$2 AND name='Cash' LIMIT 1", [cmd.tenantId, cmd.storeId]);
+        
+        if (revAcc.rows.length && cashAcc.rows.length) {
+          const { postJournalEntry } = require('./accounting.service');
+          await postJournalEntry(client, {
+            tenantId: cmd.tenantId,
+            storeId: cmd.storeId,
+            userId: cmd.createdBy,
+            voucher_no: `SV-${sale.sale_number}`,
+            voucher_type: 'Sales',
+            entry_date: new Date(sale.sale_date).toISOString().split('T')[0],
+            narrative: `POS Sale ${sale.sale_number}`,
+            lines: [
+              { account_id: cashAcc.rows[0].id, debit: total, credit: 0, narrative: `Cash collected for Sale ${sale.sale_number}` },
+              { account_id: revAcc.rows[0].id, debit: 0, credit: total, narrative: `Revenue for Sale ${sale.sale_number}` }
+            ]
+          });
+        }
+      } catch (err) {
+        // Log but don't fail sale if accounting fails during Phase 1 rollout
+        console.error('Failed to post journal entry for sale', err);
+      }
+
       return { sale, lineItems, stockUpdates };
     });
   }
