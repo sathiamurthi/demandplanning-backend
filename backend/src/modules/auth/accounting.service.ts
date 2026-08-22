@@ -1,8 +1,15 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { query, queryOne, withTransaction } from '../../config/db';
-import { ok, fail } from '../../utils/response';
-import { authMiddleware, tenantContextMiddleware, requireMinRole } from './auth.service';
+import { requireMinRole } from '../../core/guards/roleGuard';
+import { authMiddleware, tenantContextMiddleware } from './auth.service';
+
+function ok(res: any, data: any, status = 200) {
+  res.status(status).json({ success: true, data });
+}
+function fail(res: any, message: string, status = 400) {
+  res.status(status).json({ success: false, error: message });
+}
 
 export const accountingRouter = Router({ mergeParams: true });
 accountingRouter.use(authMiddleware);
@@ -16,7 +23,7 @@ accountingRouter.use(tenantContextMiddleware);
 accountingRouter.post('/coa/seed', requireMinRole('owner'), async (req, res) => {
   try {
     const tenantId = (req as any).user.tenantId;
-    const storeId = req.params.storeId;
+    const storeId = (req.params as any).storeId;
     
     const existing = await query('SELECT id FROM chart_of_accounts WHERE tenant_id = $1 LIMIT 1', [tenantId]);
     if (existing.length > 0) return fail(res, 'Chart of accounts already seeded for this tenant.');
@@ -61,7 +68,7 @@ accountingRouter.get('/coa', async (req, res) => {
 accountingRouter.post('/coa', requireMinRole('manager'), async (req, res) => {
   try {
     const tenantId = (req as any).user.tenantId;
-    const storeId = req.params.storeId;
+    const storeId = (req.params as any).storeId;
     const { name, account_type, parent_id, account_code } = req.body;
     
     if (!name || !account_type) return fail(res, 'Name and account_type are required');
@@ -91,54 +98,62 @@ const JournalEntrySchema = z.object({
   })).min(2, "At least two lines are required for a double entry")
 });
 
+export async function postJournalEntry(client: any, data: any) {
+  // Create Header
+  const headerRes = await client.query(
+    `INSERT INTO journal_entries (tenant_id, store_id, voucher_no, voucher_type, entry_date, narrative, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [data.tenantId, data.storeId, data.voucher_no || `JV-${Date.now()}`, data.voucher_type, data.entry_date, data.narrative, data.userId]
+  );
+  const header = headerRes.rows[0];
+
+  // Insert Lines and Update Balances
+  for (const line of data.lines) {
+    await client.query(
+      `INSERT INTO journal_lines (entry_id, account_id, debit, credit, narrative)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [header.id, line.account_id, line.debit, line.credit, line.narrative]
+    );
+
+    const accRes = await client.query('SELECT account_type FROM chart_of_accounts WHERE id=$1', [line.account_id]);
+    if (accRes.rows.length) {
+      const type = accRes.rows[0].account_type;
+      let netChange = 0;
+      if (['Asset', 'Expense'].includes(type)) {
+        netChange = line.debit - line.credit;
+      } else {
+        netChange = line.credit - line.debit;
+      }
+      await client.query('UPDATE chart_of_accounts SET current_balance = current_balance + $1 WHERE id=$2', [netChange, line.account_id]);
+    }
+  }
+
+  return header;
+}
+
 accountingRouter.post('/journal', requireMinRole('manager'), async (req, res) => {
   try {
     const parsed = JournalEntrySchema.parse(req.body);
     const tenantId = (req as any).user.tenantId;
-    const storeId = req.params.storeId;
+    const storeId = (req.params as any).storeId;
     const userId = (req as any).user.sub;
 
-    // Validate balance
     const totalDebit = parsed.lines.reduce((sum, line) => sum + line.debit, 0);
     const totalCredit = parsed.lines.reduce((sum, line) => sum + line.credit, 0);
 
-    // Using small epsilon for float comparison just in case
     if (Math.abs(totalDebit - totalCredit) > 0.01) {
       return fail(res, `Unbalanced Journal Entry. Total Debit: ${totalDebit}, Total Credit: ${totalCredit}`);
     }
 
     const entry = await withTransaction(async (client) => {
-      // Create Header
-      const headerRes = await client.query(
-        `INSERT INTO journal_entries (tenant_id, store_id, voucher_no, voucher_type, entry_date, narrative, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [tenantId, storeId, parsed.voucher_no || `JV-${Date.now()}`, parsed.voucher_type, parsed.entry_date, parsed.narrative, userId]
-      );
-      const header = headerRes.rows[0];
-
-      // Insert Lines and Update Balances
-      for (const line of parsed.lines) {
-        await client.query(
-          `INSERT INTO journal_lines (entry_id, account_id, debit, credit, narrative)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [header.id, line.account_id, line.debit, line.credit, line.narrative]
-        );
-
-        // Update current_balance on COA (Asset/Expense increases with Debit, Liability/Equity/Rev increases with Credit)
-        const accRes = await client.query('SELECT account_type FROM chart_of_accounts WHERE id=$1', [line.account_id]);
-        if (accRes.rows.length) {
-          const type = accRes.rows[0].account_type;
-          let netChange = 0;
-          if (['Asset', 'Expense'].includes(type)) {
-            netChange = line.debit - line.credit;
-          } else {
-            netChange = line.credit - line.debit;
-          }
-          await client.query('UPDATE chart_of_accounts SET current_balance = current_balance + $1 WHERE id=$2', [netChange, line.account_id]);
-        }
-      }
-
-      return header;
+      return await postJournalEntry(client, {
+        tenantId, storeId, userId,
+        voucher_no: parsed.voucher_no,
+        voucher_type: parsed.voucher_type,
+        entry_date: parsed.entry_date,
+        narrative: parsed.narrative,
+        lines: parsed.lines
+      });
     });
 
     ok(res, entry);
@@ -149,7 +164,7 @@ accountingRouter.post('/journal', requireMinRole('manager'), async (req, res) =>
 accountingRouter.get('/journal', async (req, res) => {
   try {
     const tenantId = (req as any).user.tenantId;
-    const storeId = req.params.storeId;
+    const storeId = (req.params as any).storeId;
     const entries = await query(
       `SELECT j.*, 
         (SELECT json_agg(json_build_object('account_name', c.name, 'debit', l.debit, 'credit', l.credit))

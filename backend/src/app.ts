@@ -205,9 +205,10 @@ if (process.env.LOG_API_CALLS === 'true') {
 }
 
 // ── 404 handler ──────────────────────────────────────────────
-app.use((_req: Request, res: Response) => {
-  res.status(404).json({ success: false, error: 'Endpoint not found', timestamp: new Date().toISOString() });
-});
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    console.error(`404 Endpoint Not Found: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ success: false, error: 'Endpoint not found', timestamp: new Date().toISOString() });
+  });
 
 // ── Global error handler ─────────────────────────────────────
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
