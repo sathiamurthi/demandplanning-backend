@@ -126,7 +126,7 @@ crmRouter.post('/quotations', async (req, res) => {
 
     let subtotal = 0, discount_amount = 0, gst_amount = 0, total_amount = 0;
     
-    for (const item of items) {
+    for (const item of (items || [])) {
       subtotal += Number(item.qty) * Number(item.unit_price);
       const discount = (Number(item.qty) * Number(item.unit_price) * Number(item.discount_pct || 0)) / 100;
       discount_amount += discount;
@@ -143,7 +143,7 @@ crmRouter.post('/quotations', async (req, res) => {
 
     const quote = quoteRes.rows[0];
 
-    for (const item of items) {
+    for (const item of (items || [])) {
       const line_total = (Number(item.qty) * Number(item.unit_price)) * (1 - Number(item.discount_pct || 0) / 100) * (1 + Number(item.gst_rate || 0) / 100);
       await client.query(
         `INSERT INTO quotation_items (quotation_id, item_id, description, qty, unit_price, discount_pct, gst_rate, line_total)

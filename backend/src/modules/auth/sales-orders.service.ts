@@ -38,7 +38,7 @@ salesOrdersRouter.post('/', async (req, res) => {
 
     let subtotal = 0, discount_amount = 0, gst_amount = 0, total_amount = 0;
     
-    for (const item of items) {
+    for (const item of (items || [])) {
       subtotal += Number(item.qty) * Number(item.unit_price);
       const discount = (Number(item.qty) * Number(item.unit_price) * Number(item.discount_pct || 0)) / 100;
       discount_amount += discount;
@@ -55,7 +55,7 @@ salesOrdersRouter.post('/', async (req, res) => {
 
     const so = soRes.rows[0];
 
-    for (const item of items) {
+    for (const item of (items || [])) {
       const line_total = (Number(item.qty) * Number(item.unit_price)) * (1 - Number(item.discount_pct || 0) / 100) * (1 + Number(item.gst_rate || 0) / 100);
       await client.query(
         `INSERT INTO sales_order_items (sales_order_id, item_id, description, qty, unit_price, discount_pct, gst_rate, line_total)
@@ -96,6 +96,44 @@ salesOrdersRouter.get('/:id', async (req, res) => {
     );
     
     res.json({ success: true, data: { ...qRes.rows[0], items: iRes.rows } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Update
+salesOrdersRouter.put('/:id', async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const { id } = req.params;
+  const updates = req.body;
+  delete updates.id;
+  delete updates.created_at;
+  delete updates.updated_at;
+  delete updates.items; // handle items separately if needed
+  
+  try {
+    const setClause = Object.keys(updates).map((k, i) => `"${k}" = $${i + 3}`).join(', ');
+    const values = Object.values(updates);
+    
+    if (setClause) {
+      await pool.query(
+        `UPDATE sales_orders SET ${setClause}, updated_at = NOW() WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId, ...values]
+      );
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Delete
+salesOrdersRouter.delete('/:id', async (req, res) => {
+  const tenantId = (req as any).tenantId;
+  const { id } = req.params;
+  try {
+    await pool.query(`DELETE FROM sales_orders WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

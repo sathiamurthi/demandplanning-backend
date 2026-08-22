@@ -41,7 +41,7 @@ interface CreateSaleCommand extends ICommand {
 
 class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
   async execute(cmd: CreateSaleCommand) {
-    if (!cmd.items.length) throw new Error('Sale must have at least one item');
+    // if (!cmd.items.length) throw new Error('Sale must have at least one item'); // Allow empty for shell invoices
 
     return withTransaction(async (client) => {
       // 1. Validate all items exist and have sufficient stock
@@ -49,7 +49,7 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
       let subtotal = 0;
       let totalGst = 0;
 
-      for (const si of cmd.items) {
+      for (const si of (cmd.items || [])) {
         const item = await client.query('SELECT * FROM items WHERE id=$1 AND store_id=$2 AND is_active=TRUE',[si.itemId,cmd.storeId]).then(r=>r.rows[0]);
         if (!item) throw new Error(`Item ${si.itemId} not found`);
         
@@ -367,7 +367,7 @@ const CreateSaleSchema = z.object({
   saleDate: z.string().optional(), customerName: z.string().optional(),
   customerPhone: z.string().optional(), customerEmail: z.string().email().optional(),
   paymentMethod: z.string().optional(), discountAmount: z.number().optional(),
-  notes: z.string().optional(), items: z.array(SaleItemSchema).min(1),
+  notes: z.string().optional(), items: z.array(SaleItemSchema).optional(),
 });
 
 salesRouter.get('/', async (req, res) => {
@@ -460,6 +460,36 @@ salesRouter.post('/bulk', requireMinRole('manager'), async (req, res) => {
     ok(res, r, 201);
   } catch (e: any) { fail(res, e.message); }
 });
+
+
+salesRouter.put('/:saleId', requireMinRole('staff'), async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { saleId } = req.params;
+    const updates = req.body;
+    
+    // Only allow updating certain fields to preserve financial integrity
+    const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount'];
+    const updateKeys = Object.keys(updates).filter(k => allowedFields.includes(k) || allowedFields.includes(k.replace(/([A-Z])/g, "_$1").toLowerCase()));
+    
+    if (updateKeys.length > 0) {
+      const setClause = updateKeys.map((k, i) => {
+        const dbKey = k.replace(/([A-Z])/g, "_$1").toLowerCase();
+        return `"${dbKey}" = ${i + 3}`;
+      }).join(', ');
+      
+      const values = updateKeys.map(k => updates[k]);
+      
+      await query(
+        `UPDATE sales SET ${setClause}, updated_at = NOW() WHERE id = $1 AND tenant_id = $2`,
+        [saleId, user.tenantId, ...values]
+      );
+    }
+    
+    ok(res, { success: true });
+  } catch (e: any) { fail(res, e.message); }
+});
+
 
 salesRouter.delete('/:saleId', requireRole('owner'), async (req, res) => {
   try {
