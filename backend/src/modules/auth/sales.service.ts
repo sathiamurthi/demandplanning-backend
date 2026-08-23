@@ -478,7 +478,7 @@ salesRouter.put('/:saleId', requireMinRole('staff'), async (req, res) => {
     const updates = req.body;
     
     // Only allow updating certain fields to preserve financial integrity
-    const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount'];
+    const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount', 'status'];
     const updateKeys = Object.keys(updates).filter(k => allowedFields.includes(k) || allowedFields.includes(k.replace(/([A-Z])/g, "_$1").toLowerCase()));
     
     if (updateKeys.length > 0) {

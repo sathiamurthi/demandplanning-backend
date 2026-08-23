@@ -162,7 +162,7 @@ async function callClaude(
 // AGENT 1 — DataCollector (DB only, no Claude)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function agentDataCollector(storeId: string) {
-  const [items, recentForecasts] = await Promise.all([
+  const [items, recentForecasts, topSales] = await Promise.all([
     dbQuery<any>(
       `SELECT i.id, i.name, i.sku, c.name AS category, i.selling_price AS unit_price,
               i.current_stock, i.reorder_level AS reorder_point, i.is_active
@@ -180,17 +180,27 @@ async function agentDataCollector(storeId: string) {
        ORDER BY created_at DESC LIMIT 40`,
       [storeId]
     ),
+    dbQuery<any>(
+      `SELECT i.name as item_name, SUM(si.qty)::int as qty_sold 
+       FROM sale_items si 
+       JOIN sales s ON s.id = si.sale_id 
+       JOIN items i ON i.id = si.item_id 
+       WHERE s.store_id = $1 AND s.sale_date >= NOW() - INTERVAL '30 days'
+       GROUP BY i.name ORDER BY qty_sold DESC LIMIT 20`,
+      [storeId]
+    )
   ]);
 
   const stockAlerts = items.filter(
     (i: any) => parseFloat(i.current_stock) <= parseFloat(i.reorder_point ?? 0)
   );
 
-  const categories = [...new Set(items.map((i: any) => i.category).filter(Boolean))];
+  const categories = Array.from(new Set(items.map((i: any) => i.category).filter(Boolean))) as string[];
 
   return {
     items,
     recentForecasts,
+    topSales,
     stockAlerts,
     categories,
     totalItems: items.length,
@@ -211,6 +221,10 @@ async function agentTrendAnalyzer(
     return `${i.name} | cat:${i.category ?? 'misc'} | stock:${i.current_stock} | reorder_at:${i.reorder_point ?? 0} | last_forecast:${f?.predicted_qty_30d ?? 'none'}`;
   }).join('\n');
 
+  const topSalesList = dc.topSales?.length 
+    ? dc.topSales.map((s:any) => `${s.item_name}: ${s.qty_sold} sold (30d)`).join(' | ') 
+    : 'No recent sales data';
+
   const prompt = `You are TrendAnalyzer, an inventory trend analysis agent.
 
 STORE SNAPSHOT:
@@ -219,10 +233,14 @@ Categories: ${dc.categories.join(', ') || 'uncategorized'}
 Items below reorder point: ${dc.totalAlerts}
 Recent AI forecasts available: ${dc.recentForecasts.length}
 
+TOP SELLING TRENDS (Past 30 Days):
+${topSalesList}
+
 ITEM SAMPLE (up to 20):
 ${itemSample}
 
-Analyze demand trends and return ONLY valid JSON (no markdown):
+Analyze demand trends considering customer buying trends, seasonal impacts (e.g., viral fever trends, summer/winter), fast-moving/highly running items, and historical sales patterns.
+Return ONLY valid JSON (no markdown):
 {
   "trends": [
     { "category": "string", "direction": "rising|stable|declining", "change_pct": 0, "confidence": 75, "note": "string" }
@@ -313,10 +331,14 @@ PREVIOUS AGENT OUTPUTS:
 Health: ${(ta as any).overallHealth} | Risk score: ${(ra as any).riskScore}/100
 Critical items: ${(ra as any).criticalCount}
 
+TREND & SALES INSIGHTS:
+${(ta as any).insights?.join('\n') || 'No insights.'}
+Categories moving: ${(ta as any).trends?.map((t:any)=>`${t.category} (${t.direction})`).join(', ') || 'N/A'}
+
 PRIORITY ITEMS FOR FORECAST:
 ${priorityItems}
 
-Generate 30-day demand forecasts and return ONLY valid JSON (no markdown):
+Generate 30-day demand forecasts, factoring in seasonal trends, fast-moving items, and the insights provided. Ensure reasoning mentions specific trends if applicable. Return ONLY valid JSON (no markdown):
 {
   "forecasts": [
     { "itemName": "string", "predicted30d": 25, "confidence": 80, "shouldOrder": true, "orderQty": 20, "estimatedCost": 2500 }
