@@ -267,12 +267,23 @@ ${JSON.stringify(promptData, null, 2)}`;
     // 8. Parse + validate AI output with Zod
     let parsed: any[];
     try {
-      const match = rawText.match(/\[[\s\S]*\]/);
-      if (match) {
-        parsed = JSON.parse(match[0]);
-      } else {
-        const cleaned = rawText.replace(/```json|```/g, '').trim();
+      // First try to parse the raw text (often works if responseMimeType is used)
+      let cleaned = rawText.trim();
+      if (cleaned.startsWith('```json')) cleaned = cleaned.replace(/```json/g, '');
+      if (cleaned.startsWith('```')) cleaned = cleaned.replace(/```/g, '');
+      if (cleaned.endsWith('```')) cleaned = cleaned.substring(0, cleaned.length - 3);
+      cleaned = cleaned.trim();
+      
+      try {
         parsed = JSON.parse(cleaned);
+      } catch (e1) {
+        // If it fails, try to extract the first JSON array block
+        const match = rawText.match(/\[[\s\S]*?\](?=\s*$|\s*```|$)/);
+        if (match) {
+          parsed = JSON.parse(match[0]);
+        } else {
+          throw e1;
+        }
       }
     } catch (err) {
       console.error('JSON parse error. Raw text was:', rawText);
