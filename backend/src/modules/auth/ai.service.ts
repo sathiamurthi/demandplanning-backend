@@ -234,8 +234,8 @@ ${JSON.stringify(promptData, null, 2)}`;
       try {
         const geminiRes = await callGemini({
           prompt: prompt,
-          maxTokens: 2000,
-          responseMimeType: 'application/json',
+          maxTokens: 4000,
+          // responseMimeType: 'application/json', // REMOVED: Causes truncation in some Gemini versions without schema
         });
         modelName = geminiRes.model;
         rawText = geminiRes.text;
@@ -250,7 +250,7 @@ ${JSON.stringify(promptData, null, 2)}`;
       try {
         const aiMessage = await this.anthropic.messages.create({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 2000,
+          max_tokens: 4000,
           messages: [{ role: 'user', content: prompt }],
         });
         modelName = 'claude-sonnet-4-20250514';
