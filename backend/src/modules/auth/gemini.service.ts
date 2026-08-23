@@ -18,18 +18,36 @@ export async function callGemini(params: {
   const ai = new GoogleGenAI({ apiKey });
   const model = getGeminiModel();
 
-  const response = await ai.models.generateContent({
-    model: model,
-    contents: params.imageBase64 && params.mimeType ? [
-      params.prompt,
-      { inlineData: { data: params.imageBase64, mimeType: params.mimeType } }
-    ] : params.prompt,
-    config: {
-      maxOutputTokens: params.maxTokens,
-      responseMimeType: params.responseMimeType,
-      responseSchema: params.responseSchema,
-    },
-  });
+  let retries = 3;
+  let response;
+  while (retries > 0) {
+    try {
+      response = await ai.models.generateContent({
+        model: model,
+        contents: params.imageBase64 && params.mimeType ? [
+          params.prompt,
+          { inlineData: { data: params.imageBase64, mimeType: params.mimeType } }
+        ] : params.prompt,
+        config: {
+          maxOutputTokens: params.maxTokens,
+          responseMimeType: params.responseMimeType,
+          responseSchema: params.responseSchema,
+        },
+      });
+      break; // Success
+    } catch (err: any) {
+      if (err.status === 503 && retries > 1) {
+        retries--;
+        await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds before retry
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (!response) {
+    throw new Error('Failed to generate content from Gemini');
+  }
 
   const text = response.text || '';
   const inputTokens = response.usageMetadata?.promptTokenCount || 0;

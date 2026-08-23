@@ -181,7 +181,7 @@ async function agentDataCollector(storeId: string) {
       [storeId]
     ),
     dbQuery<any>(
-      `SELECT i.name as item_name, SUM(si.qty)::int as qty_sold 
+      `SELECT i.name as item_name, SUM(si.qty_sold)::int as qty_sold, string_agg(DISTINCT s.referred_by, ', ') as referrers
        FROM sale_items si 
        JOIN sales s ON s.id = si.sale_id 
        JOIN items i ON i.id = si.item_id 
@@ -222,7 +222,7 @@ async function agentTrendAnalyzer(
   }).join('\n');
 
   const topSalesList = dc.topSales?.length 
-    ? dc.topSales.map((s:any) => `${s.item_name}: ${s.qty_sold} sold (30d)`).join(' | ') 
+    ? dc.topSales.map((s:any) => `${s.item_name}: ${s.qty_sold} sold (30d) ${s.referrers ? `| Referrals: ${s.referrers}` : ''}`).join('\n') 
     : 'No recent sales data';
 
   const prompt = `You are TrendAnalyzer, an inventory trend analysis agent.
@@ -239,7 +239,7 @@ ${topSalesList}
 ITEM SAMPLE (up to 20):
 ${itemSample}
 
-Analyze demand trends considering customer buying trends, seasonal impacts (e.g., viral fever trends, summer/winter), fast-moving/highly running items, and historical sales patterns.
+Analyze demand trends considering customer buying trends, seasonal impacts (e.g., viral fever trends, summer/winter), fast-moving/highly running items, patient referrals/referred_by data, and historical sales patterns.
 Return ONLY valid JSON (no markdown):
 {
   "trends": [

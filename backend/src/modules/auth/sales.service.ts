@@ -36,6 +36,7 @@ interface CreateSaleCommand extends ICommand {
   saleType: SaleType; saleDate?: string;
   customerName?: string; customerPhone?: string; customerEmail?: string;
   paymentMethod?: string; discountAmount?: number; notes?: string;
+  referredBy?: string;
   items: SaleItemInput[]; createdBy: string; salesOrderId?: string;
 }
 
@@ -87,11 +88,11 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
 
       // 2. Create sale record
       const [sale] = await client.query(
-        `INSERT INTO sales (store_id,tenant_id,sale_number,sale_type,sale_date,customer_name,customer_phone,customer_email,subtotal,discount_amount,gst_amount,total_amount,payment_method,notes,created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        `INSERT INTO sales (store_id,tenant_id,sale_number,sale_type,sale_date,customer_name,customer_phone,customer_email,subtotal,discount_amount,gst_amount,total_amount,payment_method,notes,created_by,referred_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
         [cmd.storeId,cmd.tenantId,saleNumber,cmd.saleType,cmd.saleDate||new Date().toISOString(),
          cmd.customerName||null,cmd.customerPhone||null,cmd.customerEmail||null,
-         subtotal,extraDiscount,totalGst,total,cmd.paymentMethod||null,cmd.notes||null,cmd.createdBy]
+         subtotal,extraDiscount,totalGst,total,cmd.paymentMethod||null,cmd.notes||null,cmd.createdBy,cmd.referredBy||null]
       ).then(r=>r.rows);
 
       // 3. Create line items + stock ledger entries

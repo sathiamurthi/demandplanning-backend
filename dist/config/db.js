@@ -3994,6 +3994,8 @@ END $$;
         );
 
         ALTER TABLE sales ADD COLUMN IF NOT EXISTS sales_order_id UUID REFERENCES sales_orders(id) ON DELETE SET NULL;
+        ALTER TABLE sales ADD COLUMN IF NOT EXISTS referred_by VARCHAR(200);
+        ALTER TABLE sales ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'issued';
       `
         },
         {

@@ -158,7 +158,7 @@ async function agentDataCollector(storeId) {
        FROM ai_forecasts
        WHERE store_id = $1
        ORDER BY created_at DESC LIMIT 40`, [storeId]),
-        (0, db_1.query)(`SELECT i.name as item_name, SUM(si.qty)::int as qty_sold 
+        (0, db_1.query)(`SELECT i.name as item_name, SUM(si.qty_sold)::int as qty_sold, string_agg(DISTINCT s.referred_by, ', ') as referrers
        FROM sale_items si 
        JOIN sales s ON s.id = si.sale_id 
        JOIN items i ON i.id = si.item_id 
@@ -186,7 +186,7 @@ async function agentTrendAnalyzer(dc, runId, tenantId) {
         return `${i.name} | cat:${i.category ?? 'misc'} | stock:${i.current_stock} | reorder_at:${i.reorder_point ?? 0} | last_forecast:${f?.predicted_qty_30d ?? 'none'}`;
     }).join('\n');
     const topSalesList = dc.topSales?.length
-        ? dc.topSales.map((s) => `${s.item_name}: ${s.qty_sold} sold (30d)`).join(' | ')
+        ? dc.topSales.map((s) => `${s.item_name}: ${s.qty_sold} sold (30d) ${s.referrers ? `| Referrals: ${s.referrers}` : ''}`).join('\n')
         : 'No recent sales data';
     const prompt = `You are TrendAnalyzer, an inventory trend analysis agent.
 
@@ -202,7 +202,7 @@ ${topSalesList}
 ITEM SAMPLE (up to 20):
 ${itemSample}
 
-Analyze demand trends considering customer buying trends, seasonal impacts (e.g., viral fever trends, summer/winter), fast-moving/highly running items, and historical sales patterns.
+Analyze demand trends considering customer buying trends, seasonal impacts (e.g., viral fever trends, summer/winter), fast-moving/highly running items, patient referrals/referred_by data, and historical sales patterns.
 Return ONLY valid JSON (no markdown):
 {
   "trends": [
@@ -404,6 +404,20 @@ async function runAIPipeline(storeId, storeName, tenantId, triggeredBy) {
         const rep = await step('ReportWriter', () => agentReportWriter({ dc, ta, ra, fe, rec }, runId, tenantId));
         const [tokenRow] = await (0, db_1.query)(`SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0)::int AS t FROM ai_usage_logs WHERE pipeline_run_id = $1`, [runId]);
         const totalTokens = parseInt(tokenRow?.t ?? '0');
+        // Save forecasts to ai_forecasts table so POs can use them
+        try {
+            const forecastsToInsert = fe.forecasts || [];
+            for (const f of forecastsToInsert) {
+                const itemObj = dc.items.find((i) => i.name === f.itemName);
+                if (itemObj) {
+                    await (0, db_1.query)(`INSERT INTO ai_forecasts (store_id, tenant_id, item_id, predicted_qty_30d, confidence_pct, order_needed, order_qty, risk_level, reasoning, industry_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, [storeId, tenantId, itemObj.id, f.predicted30d || 0, f.confidence || 0, !!f.shouldOrder, f.orderQty || 0, 'Medium', 'AI Forecast Engine Recommendation', 'retail']);
+                }
+            }
+        }
+        catch (e) {
+            console.error("Failed to insert ai_forecasts", e);
+        }
         const result = { collector: dc, trend: ta, risk: ra, forecast: fe, recommendation: rec, report: rep };
         await (0, db_1.query)(`UPDATE ai_pipeline_runs SET status='completed', total_tokens=$1, result=$2, completed_at=NOW() WHERE id=$3`, [totalTokens, JSON.stringify(result), runId]);
         return { runId, status: 'completed', agents, result, totalTokens, durationMs: Date.now() - startedAt };
