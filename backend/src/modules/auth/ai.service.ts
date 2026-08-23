@@ -265,11 +265,17 @@ ${JSON.stringify(promptData, null, 2)}`;
     }
 
     // 8. Parse + validate AI output with Zod
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
     let parsed: any[];
     try {
-      parsed = JSON.parse(cleaned);
-    } catch {
+      const match = rawText.match(/\[[\s\S]*\]/);
+      if (match) {
+        parsed = JSON.parse(match[0]);
+      } else {
+        const cleaned = rawText.replace(/```json|```/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      }
+    } catch (err) {
+      console.error('JSON parse error. Raw text was:', rawText);
       throw new Error('AI returned invalid JSON — please try again');
     }
 
