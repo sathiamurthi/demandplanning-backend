@@ -36,7 +36,7 @@ interface CreateSaleCommand extends ICommand {
   saleType: SaleType; saleDate?: string;
   customerName?: string; customerPhone?: string; customerEmail?: string;
   paymentMethod?: string; discountAmount?: number; notes?: string;
-  items: SaleItemInput[]; createdBy: string;
+  items: SaleItemInput[]; createdBy: string; salesOrderId?: string;
 }
 
 class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
@@ -176,6 +176,14 @@ class CreateSaleCommandHandler implements ICommandHandler<CreateSaleCommand> {
       } catch (err) {
         // Log but don't fail sale if accounting fails during Phase 1 rollout
         console.error('Failed to post journal entry for sale', err);
+      }
+
+      if (cmd.salesOrderId) {
+        try {
+          await client.query(`UPDATE sales_orders SET status='Delivered' WHERE id=$1 AND tenant_id=$2`, [cmd.salesOrderId, cmd.tenantId]);
+        } catch (err) {
+          console.error('Failed to update sales order status', err);
+        }
       }
 
       return { sale, lineItems, stockUpdates };
@@ -368,6 +376,7 @@ const CreateSaleSchema = z.object({
   customerPhone: z.string().optional(), customerEmail: z.string().email().optional(),
   paymentMethod: z.string().optional(), discountAmount: z.number().optional(),
   notes: z.string().optional(), items: z.array(SaleItemSchema).optional(),
+  salesOrderId: z.string().uuid().optional(),
 });
 
 salesRouter.get('/', async (req, res) => {

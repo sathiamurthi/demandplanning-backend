@@ -139,6 +139,14 @@ class CreateSaleCommandHandler {
                 // Log but don't fail sale if accounting fails during Phase 1 rollout
                 console.error('Failed to post journal entry for sale', err);
             }
+            if (cmd.salesOrderId) {
+                try {
+                    await client.query(`UPDATE sales_orders SET status='Delivered' WHERE id=$1 AND tenant_id=$2`, [cmd.salesOrderId, cmd.tenantId]);
+                }
+                catch (err) {
+                    console.error('Failed to update sales order status', err);
+                }
+            }
             return { sale, lineItems, stockUpdates };
         });
     }
@@ -279,6 +287,7 @@ const CreateSaleSchema = zod_1.z.object({
     customerPhone: zod_1.z.string().optional(), customerEmail: zod_1.z.string().email().optional(),
     paymentMethod: zod_1.z.string().optional(), discountAmount: zod_1.z.number().optional(),
     notes: zod_1.z.string().optional(), items: zod_1.z.array(SaleItemSchema).optional(),
+    salesOrderId: zod_1.z.string().uuid().optional(),
 });
 exports.salesRouter.get('/', async (req, res) => {
     try {
