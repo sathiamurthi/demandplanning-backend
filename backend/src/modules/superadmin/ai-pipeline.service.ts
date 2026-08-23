@@ -523,6 +523,23 @@ export async function runAIPipeline(
     );
     const totalTokens = parseInt(tokenRow?.t ?? '0');
 
+    // Save forecasts to ai_forecasts table so POs can use them
+    try {
+      const forecastsToInsert = (fe as any).forecasts || [];
+      for (const f of forecastsToInsert) {
+        const itemObj = dc.items.find((i: any) => i.name === f.itemName);
+        if (itemObj) {
+          await dbQuery(
+            `INSERT INTO ai_forecasts (store_id, tenant_id, item_id, predicted_qty_30d, confidence_pct, order_needed, order_qty, risk_level, reasoning, industry_id) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [storeId, tenantId, itemObj.id, f.predicted30d || 0, f.confidence || 0, !!f.shouldOrder, f.orderQty || 0, 'Medium', 'AI Forecast Engine Recommendation', 'retail']
+          );
+        }
+      }
+    } catch(e) {
+      console.error("Failed to insert ai_forecasts", e);
+    }
+
     const result = { collector: dc, trend: ta, risk: ra, forecast: fe, recommendation: rec, report: rep };
 
     await dbQuery(
