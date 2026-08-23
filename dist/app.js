@@ -55,6 +55,9 @@ const auth_service_1 = require("./modules/auth/auth.service");
 const tenants_service_1 = require("./modules/auth/tenants.service");
 const stores_service_1 = require("./modules/auth/stores.service");
 const items_service_1 = require("./modules/auth/items.service");
+const crm_service_1 = require("./modules/auth/crm.service");
+const hr_service_1 = require("./modules/auth/hr.service");
+const sales_orders_service_1 = require("./modules/auth/sales-orders.service");
 const accounting_service_1 = require("./modules/auth/accounting.service");
 const sales_service_1 = require("./modules/auth/sales.service");
 const coupons_service_1 = require("./modules/auth/coupons.service");
@@ -185,7 +188,7 @@ exports.app.use('/v1/ride360', ride360_router_1.ride360Router);
 exports.app.use('/v1/saferide360', saferide360_router_1.saferide360Router);
 exports.app.use('/v1/tea-agent', tea_agent_auth_service_1.teaAgentAuthRouter);
 exports.app.use('/v1/auth', auth_service_1.authRouter);
-exports.app.use('/v1/units', units_service_1.unitsRouter);
+exports.app.use('/v1/units', auth_service_1.authMiddleware, units_service_1.unitsRouter);
 exports.app.use('/v1/industries', industry_service_1.industryRouter);
 exports.app.use('/v1/tenants/:tenantId/stores', route_1.default);
 exports.app.use('/v1/tenants/:tenantId/dashboard', auth_service_1.authMiddleware, tenant_router_1.default);
@@ -200,6 +203,10 @@ exports.app.use('/v1/tenants/:tenantId/suppliers', suppliers_service_1.suppliers
 exports.app.use('/v1/tenants/:tenantId/purchase-orders', purchase_orders_service_1.purchaseOrdersRouter);
 exports.app.use('/v1/tenants/:tenantId/stores/:storeId/items', items_service_1.itemRouter);
 exports.app.use('/v1/tenants/:tenantId/stores/:storeId/accounting', accounting_service_1.accountingRouter);
+exports.app.use('/v1/tenants/:tenantId/stores/:storeId', crm_service_1.crmRouter); // Provides /leads and /quotations
+exports.app.use('/v1/tenants/:tenantId/stores/:storeId', hr_service_1.hrRouter); // Provides /attendance and /timesheets
+exports.app.use('/v1/tenants/:tenantId/stores/:storeId/sales-orders', sales_orders_service_1.salesOrdersRouter);
+exports.app.use('/v1/tenants/:tenantId/stores/:storeId/sales', auth_service_1.authMiddleware, sales_service_1.salesRouter);
 exports.app.use('/v1/tenants', tenants_service_1.tenantRouter); // ← AFTER specifics
 exports.app.use('/v1/stores/:storeId/sales', auth_service_1.authMiddleware, sales_service_1.salesRouter);
 exports.app.use('/v1/stores/:storeId/report', auth_service_1.authMiddleware, ai_service_1.aiRouter);

@@ -28,14 +28,13 @@ async function generateSaleNumber(storeId, type) {
 }
 class CreateSaleCommandHandler {
     async execute(cmd) {
-        if (!cmd.items.length)
-            throw new Error('Sale must have at least one item');
+        // if (!cmd.items.length) throw new Error('Sale must have at least one item'); // Allow empty for shell invoices
         return (0, db_1.withTransaction)(async (client) => {
             // 1. Validate all items exist and have sufficient stock
             const stockUpdates = [];
             let subtotal = 0;
             let totalGst = 0;
-            for (const si of cmd.items) {
+            for (const si of (cmd.items || [])) {
                 const item = await client.query('SELECT * FROM items WHERE id=$1 AND store_id=$2 AND is_active=TRUE', [si.itemId, cmd.storeId]).then(r => r.rows[0]);
                 if (!item)
                     throw new Error(`Item ${si.itemId} not found`);
@@ -269,7 +268,7 @@ exports.salesRouter = (0, express_1.Router)({ mergeParams: true });
 //salesRouter.use(authMiddleware);
 const SaleItemSchema = zod_1.z.object({
     itemId: zod_1.z.string().uuid(), qtySold: zod_1.z.number().positive(),
-    unitId: zod_1.z.string().uuid().optional().nullable(), unitPrice: zod_1.z.number().positive(),
+    unitId: zod_1.z.string().optional().nullable(), unitPrice: zod_1.z.number().positive(),
     discountPct: zod_1.z.number().min(0).max(100).optional(),
     batchNumber: zod_1.z.string().optional(), expiryDate: zod_1.z.string().optional(),
     gstRate: zod_1.z.number().optional(),
@@ -279,7 +278,7 @@ const CreateSaleSchema = zod_1.z.object({
     saleDate: zod_1.z.string().optional(), customerName: zod_1.z.string().optional(),
     customerPhone: zod_1.z.string().optional(), customerEmail: zod_1.z.string().email().optional(),
     paymentMethod: zod_1.z.string().optional(), discountAmount: zod_1.z.number().optional(),
-    notes: zod_1.z.string().optional(), items: zod_1.z.array(SaleItemSchema).min(1),
+    notes: zod_1.z.string().optional(), items: zod_1.z.array(SaleItemSchema).optional(),
 });
 exports.salesRouter.get('/', async (req, res) => {
     try {
@@ -376,6 +375,28 @@ exports.salesRouter.post('/bulk', (0, roleGuard_1.requireMinRole)('manager'), as
             tenantId: req.user.tenantId, createdBy: req.user.sub, ...req.body
         });
         ok(res, r, 201);
+    }
+    catch (e) {
+        fail(res, e.message);
+    }
+});
+exports.salesRouter.put('/:saleId', (0, roleGuard_1.requireMinRole)('staff'), async (req, res) => {
+    try {
+        const user = req.user;
+        const { saleId } = req.params;
+        const updates = req.body;
+        // Only allow updating certain fields to preserve financial integrity
+        const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount'];
+        const updateKeys = Object.keys(updates).filter(k => allowedFields.includes(k) || allowedFields.includes(k.replace(/([A-Z])/g, "_$1").toLowerCase()));
+        if (updateKeys.length > 0) {
+            const setClause = updateKeys.map((k, i) => {
+                const dbKey = k.replace(/([A-Z])/g, "_$1").toLowerCase();
+                return `"${dbKey}" = ${i + 3}`;
+            }).join(', ');
+            const values = updateKeys.map(k => updates[k]);
+            await (0, db_1.query)(`UPDATE sales SET ${setClause}, updated_at = NOW() WHERE id = $1 AND tenant_id = $2`, [saleId, user.tenantId, ...values]);
+        }
+        ok(res, { success: true });
     }
     catch (e) {
         fail(res, e.message);

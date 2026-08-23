@@ -109,7 +109,7 @@ exports.crmRouter.post('/quotations', async (req, res) => {
         const countRes = await client.query('SELECT COUNT(*) FROM quotations WHERE tenant_id = $1', [tenantId]);
         const quoteNum = `QT-${new Date().getFullYear()}-${String(parseInt(countRes.rows[0].count) + 1).padStart(4, '0')}`;
         let subtotal = 0, discount_amount = 0, gst_amount = 0, total_amount = 0;
-        for (const item of items) {
+        for (const item of (items || [])) {
             subtotal += Number(item.qty) * Number(item.unit_price);
             const discount = (Number(item.qty) * Number(item.unit_price) * Number(item.discount_pct || 0)) / 100;
             discount_amount += discount;
@@ -120,7 +120,7 @@ exports.crmRouter.post('/quotations', async (req, res) => {
         const quoteRes = await client.query(`INSERT INTO quotations (tenant_id, store_id, lead_id, quote_number, customer_name, customer_email, customer_phone, issue_date, valid_until, subtotal, discount_amount, gst_amount, total_amount, status, notes, terms, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`, [tenantId, storeId, lead_id, quoteNum, customer_name, customer_email, customer_phone, issue_date, valid_until, subtotal, discount_amount, gst_amount, total_amount, status || 'Draft', notes, terms, userId]);
         const quote = quoteRes.rows[0];
-        for (const item of items) {
+        for (const item of (items || [])) {
             const line_total = (Number(item.qty) * Number(item.unit_price)) * (1 - Number(item.discount_pct || 0) / 100) * (1 + Number(item.gst_rate || 0) / 100);
             await client.query(`INSERT INTO quotation_items (quotation_id, item_id, description, qty, unit_price, discount_pct, gst_rate, line_total)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [quote.id, item.item_id, item.description, item.qty, item.unit_price, item.discount_pct || 0, item.gst_rate || 0, line_total]);

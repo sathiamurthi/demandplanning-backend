@@ -254,6 +254,16 @@ function getMigrations() {
           ('Tonne','tn','weight'),('Litre','L','volume'),('Millilitre','mL','volume'),
           ('Metre','m','length'),('Centimetre','cm','length')
         ON CONFLICT DO NOTHING;
+        INSERT INTO unit_types (name, symbol, category) VALUES
+          ('Tablet', 'tab', 'count'), ('Capsule', 'cap', 'count'), ('Bottle', 'btl', 'count'),
+          ('Tube', 'tube', 'count'), ('Vial', 'vial', 'count'), ('Ampoule', 'amp', 'count'),
+          ('Liter', 'L', 'volume'), ('Milliliter', 'mL', 'volume'), ('Packet', 'pkt', 'count'),
+          ('Pouch', 'pch', 'count'), ('Bunch', 'bunch', 'count'), ('Set', 'set', 'count'),
+          ('Kit', 'kit', 'count'), ('Pair', 'pair', 'count'), ('Gallon', 'gal', 'volume'),
+          ('Crate', 'crate', 'count'), ('Pallet', 'plt', 'count'), ('Bag', 'bag', 'count'),
+          ('Sack', 'sack', 'count'), ('Drum', 'drum', 'count')
+        ON CONFLICT DO NOTHING;
+
       `
         },
         {
@@ -553,7 +563,11 @@ function getMigrations() {
         {
             name: '011_items',
             sql: `
-        CREATE TABLE IF NOT EXISTS items (
+        
+        ALTER TABLE unit_types ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_name_key;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_symbol_key;
+CREATE TABLE IF NOT EXISTS items (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
           store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
           tenant_id UUID NOT NULL REFERENCES tenants(id),
@@ -3980,6 +3994,61 @@ END $$;
         );
 
         ALTER TABLE sales ADD COLUMN IF NOT EXISTS sales_order_id UUID REFERENCES sales_orders(id) ON DELETE SET NULL;
+      `
+        },
+        {
+            name: '104_standard_unit_types',
+            sql: `
+        ALTER TABLE unit_types ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_name_key;
+        ALTER TABLE unit_types DROP CONSTRAINT IF EXISTS unit_types_symbol_key;
+        
+        -- Seed standard units (tenant_id IS NULL)
+        INSERT INTO unit_types (name, symbol, category) VALUES
+          ('Piece','pc','count'),('Dozen','doz','count'),('Strip','strip','count'),
+          ('Box','box','count'),('Carton','ctn','count'),('Pack','pack','count'),
+          ('Kilogram','kg','weight'),('Gram','g','weight'),('Milligram','mg','weight'),
+          ('Tonne','tn','weight'),('Litre','L','volume'),('Millilitre','mL','volume'),
+          ('Metre','m','length'),('Centimetre','cm','length'),
+          ('Tablet', 'tab', 'count'), ('Capsule', 'cap', 'count'), ('Bottle', 'btl', 'count'),
+          ('Tube', 'tube', 'count'), ('Vial', 'vial', 'count'), ('Ampoule', 'amp', 'count'),
+          ('Liter', 'L', 'volume'), ('Milliliter', 'mL', 'volume'), ('Packet', 'pkt', 'count'),
+          ('Pouch', 'pch', 'count'), ('Bunch', 'bunch', 'count'), ('Set', 'set', 'count'),
+          ('Kit', 'kit', 'count'), ('Pair', 'pair', 'count'), ('Gallon', 'gal', 'volume'),
+          ('Crate', 'crate', 'count'), ('Pallet', 'plt', 'count'), ('Bag', 'bag', 'count'),
+          ('Sack', 'sack', 'count'), ('Drum', 'drum', 'count')
+        ON CONFLICT DO NOTHING;
+      `
+        },
+        {
+            name: '105_attendance_timesheets',
+            sql: `
+        CREATE TABLE IF NOT EXISTS attendance (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          date DATE NOT NULL,
+          check_in_time TIME,
+          check_out_time TIME,
+          status VARCHAR(50) DEFAULT 'Present',
+          notes TEXT,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS timesheets (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          store_id UUID NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          total_hours NUMERIC(5,2) DEFAULT 0,
+          status VARCHAR(50) DEFAULT 'Draft',
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
       `
         }
     ];
