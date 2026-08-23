@@ -395,7 +395,7 @@ exports.salesRouter.put('/:saleId', (0, roleGuard_1.requireMinRole)('staff'), as
         const { saleId } = req.params;
         const updates = req.body;
         // Only allow updating certain fields to preserve financial integrity
-        const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount'];
+        const allowedFields = ['customer_name', 'customer_phone', 'customer_email', 'payment_method', 'notes', 'sale_date', 'total_amount', 'status'];
         const updateKeys = Object.keys(updates).filter(k => allowedFields.includes(k) || allowedFields.includes(k.replace(/([A-Z])/g, "_$1").toLowerCase()));
         if (updateKeys.length > 0) {
             const setClause = updateKeys.map((k, i) => {
