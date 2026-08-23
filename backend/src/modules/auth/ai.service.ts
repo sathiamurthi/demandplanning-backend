@@ -287,7 +287,7 @@ ${JSON.stringify(promptData, null, 2)}`;
       }
     } catch (err) {
       console.error('JSON parse error. Raw text was:', rawText);
-      throw new Error('AI returned invalid JSON — please try again');
+      throw new Error('AI returned invalid JSON: ' + rawText.substring(0, 1000));
     }
 
     const ForecastItemSchema = z.object({
