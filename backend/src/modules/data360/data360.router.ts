@@ -24,7 +24,7 @@ export const data360Router = Router();
 
 // ── Config ───────────────────────────────────────────────────
 const JWT_SECRET: Secret = (process.env.JWT_SECRET || 'dev-secret-change-this') as Secret;
-const signOptions: SignOptions = { expiresIn: 8 * 3600 };
+const signOptions: SignOptions = {};
 
 // ── Helpers ──────────────────────────────────────────────────
 function ok(res: Response, data: any, status = 200) {

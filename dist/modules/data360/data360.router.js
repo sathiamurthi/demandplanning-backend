@@ -61,7 +61,7 @@ const reconciliation_service_1 = require("./reconciliation.service");
 exports.data360Router = (0, express_1.Router)();
 // ── Config ───────────────────────────────────────────────────
 const JWT_SECRET = (process.env.JWT_SECRET || 'dev-secret-change-this');
-const signOptions = { expiresIn: 8 * 3600 };
+const signOptions = {};
 // ── Helpers ──────────────────────────────────────────────────
 function ok(res, data, status = 200) {
     res.status(status).json({ success: true, data, timestamp: new Date().toISOString() });
@@ -146,9 +146,10 @@ exports.data360Router.post('/admin/grant-quota', data360Auth, async (req, res) =
 // ── REGISTER ─────────────────────────────────────────────────
 exports.data360Router.post('/auth/register', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
-        if (!name || !email || !password) {
-            fail(res, 'name, email and password are required');
+        const { name, email, password, phone, college, state, firstName, lastName } = req.body;
+        const fullName = name || [firstName, lastName].filter(Boolean).join(' ');
+        if (!fullName || !email || !password || !phone || !college || !state) {
+            fail(res, 'name, mobile number, college, state, email and password are required');
             return;
         }
         const emailLc = email.toLowerCase().trim();
@@ -158,9 +159,9 @@ exports.data360Router.post('/auth/register', async (req, res) => {
             return;
         }
         const hash = await bcryptjs_1.default.hash(password, 10);
-        const [user] = await (0, db_1.query)(`INSERT INTO data360_users (name, email, password_hash)
-       VALUES ($1,$2,$3)
-       RETURNING id, name, email, role, created_at`, [name, emailLc, hash]);
+        const [user] = await (0, db_1.query)(`INSERT INTO data360_users (name, email, password_hash, phone, preferences)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id, name, email, phone, role, preferences, is_paid, created_at`, [fullName, emailLc, hash, phone.trim(), JSON.stringify({ college: college.trim(), state })]);
         const token = makeToken(user);
         ok(res, { token, user }, 201);
     }
@@ -176,7 +177,7 @@ exports.data360Router.post('/auth/login', async (req, res) => {
             fail(res, 'email and password are required');
             return;
         }
-        const user = await (0, db_1.queryOne)(`SELECT id, name, email, password_hash, role FROM data360_users WHERE email=$1 AND is_active=TRUE`, [email.toLowerCase().trim()]);
+        const user = await (0, db_1.queryOne)(`SELECT id, name, email, password_hash, phone, preferences, is_paid, role FROM data360_users WHERE email=$1 AND is_active=TRUE`, [email.toLowerCase().trim()]);
         if (!user) {
             fail(res, 'Invalid email or password', 401);
             return;
@@ -196,7 +197,7 @@ exports.data360Router.post('/auth/login', async (req, res) => {
 });
 exports.data360Router.get('/auth/me', data360Auth, async (req, res) => {
     try {
-        const user = await (0, db_1.queryOne)('SELECT id, name, email, role, created_at FROM data360_users WHERE id=$1', [req.d360User.sub]);
+        const user = await (0, db_1.queryOne)('SELECT id, name, email, phone, preferences, is_paid, role, created_at FROM data360_users WHERE id=$1', [req.d360User.sub]);
         if (!user) {
             fail(res, 'User not found', 404);
             return;

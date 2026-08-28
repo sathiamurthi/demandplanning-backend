@@ -32,7 +32,9 @@ exports.activateSafeRide360Subscription = activateSafeRide360Subscription;
 exports.listSafeRide360Trips = listSafeRide360Trips;
 exports.listSafeRide360Drivers = listSafeRide360Drivers;
 exports.listData360Users = listData360Users;
+exports.setData360Plan = setData360Plan;
 exports.listCollege360Users = listCollege360Users;
+exports.setCollege360Plan = setCollege360Plan;
 exports.getPlatformConfig = getPlatformConfig;
 exports.setPlatformConfig = setPlatformConfig;
 const express_1 = require("express");
@@ -533,9 +535,23 @@ async function listSafeRide360Drivers(req, res) {
 async function listData360Users(req, res) {
     try {
         const limit = Math.min(200, parseInt(req.query.limit || "100"));
-        const rows = await (0, db_1.query)(`SELECT id, name, email, role, is_active, purchased_document_quota, created_at
+        const rows = await (0, db_1.query)(`SELECT id, name, email, phone, role, is_active, is_paid AS premium, preferences, purchased_document_quota, created_at
        FROM data360_users ORDER BY created_at DESC LIMIT $1`, [limit]);
         res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function setData360Plan(req, res) {
+    try {
+        const premium = req.body?.premium === true;
+        const [row] = await (0, db_1.query)(`UPDATE data360_users SET is_paid=$1 WHERE id=$2 RETURNING id, email, is_paid AS premium`, [premium, req.params.id]);
+        if (!row) {
+            res.status(404).json({ success: false, error: "Data360 user not found" });
+            return;
+        }
+        res.json({ success: true, data: row });
     }
     catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -547,6 +563,20 @@ async function listCollege360Users(req, res) {
         const rows = await (0, db_1.query)(`SELECT id, name, email, phone, role, college, premium, is_active, created_at
        FROM c360_users ORDER BY created_at DESC LIMIT $1`, [limit]);
         res.json({ success: true, data: rows });
+    }
+    catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+}
+async function setCollege360Plan(req, res) {
+    try {
+        const premium = req.body?.premium === true;
+        const [row] = await (0, db_1.query)(`UPDATE c360_users SET premium=$1 WHERE id=$2 RETURNING id, email, premium`, [premium, req.params.id]);
+        if (!row) {
+            res.status(404).json({ success: false, error: "College360 user not found" });
+            return;
+        }
+        res.json({ success: true, data: row });
     }
     catch (e) {
         res.status(500).json({ success: false, error: e.message });
@@ -668,6 +698,7 @@ router.post("/saferide360/activate-subscription", activateSafeRide360Subscriptio
 router.post("/data360/users/:id/suspend", data360Accounts.suspend);
 router.post("/data360/users/:id/reactivate", data360Accounts.reactivate);
 router.post("/data360/users/:id/send-reminder", data360Accounts.sendReminder);
+router.post("/data360/users/:id/plan", setData360Plan);
 router.post("/ride360/drivers/:id/suspend", ride360Drivers.suspend);
 router.post("/ride360/drivers/:id/reactivate", ride360Drivers.reactivate);
 router.post("/ride360/drivers/:id/send-reminder", ride360Drivers.sendReminder);
@@ -680,6 +711,7 @@ router.post("/saferide360/drivers/:id/send-reminder", saferide360Drivers.sendRem
 router.post("/college360/users/:id/suspend", college360Accounts.suspend);
 router.post("/college360/users/:id/reactivate", college360Accounts.reactivate);
 router.post("/college360/users/:id/send-reminder", college360Accounts.sendReminder);
+router.post("/college360/users/:id/plan", setCollege360Plan);
 exports.default = router;
 // ── Platform Config CRUD ────────────────────────────────────────────────────
 async function getPlatformConfig(_req, res) {

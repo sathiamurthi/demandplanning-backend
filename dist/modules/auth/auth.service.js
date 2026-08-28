@@ -92,7 +92,7 @@ class LoginCommandHandler {
         const identifier = (cmd.email || cmd.phone || '').toLowerCase().trim();
         const isPhone = /^\+?\d{7,15}$/.test(identifier.replace(/\s/g, ''));
         const user = await (0, db_1.queryOne)(`SELECT u.id, u.email, u.phone, u.password_hash, u.tenant_id, u.role,
-              u.first_name, u.last_name, u.store_id, u.tea_role_id,
+              u.first_name, u.last_name, u.preferences, u.store_id, u.tea_role_id,
               ic.industry_id
        FROM users u
        LEFT JOIN tenants t ON t.id = u.tenant_id
@@ -121,6 +121,7 @@ class LoginCommandHandler {
                 role: user.role,
                 firstName: user.first_name,
                 lastName: user.last_name,
+                preferences: user.preferences,
                 tenantId: user.tenant_id,
                 storeId: user.store_id,
                 industryId: user.industry_id,
@@ -148,9 +149,9 @@ class RegisterCommandHandler {
         const passwordHash = await bcryptjs_1.default.hash(cmd.password, 10);
         const regType = phone && !email ? 'phone' : 'email';
         const [user] = await (0, db_1.query)(`INSERT INTO users
-       (email, phone, password_hash, role, tenant_id, store_id, first_name, last_name, reg_type)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       RETURNING id, email, phone, role, tenant_id, store_id, first_name, last_name, reg_type, created_at`, [
+       (email, phone, password_hash, role, tenant_id, store_id, first_name, last_name, reg_type, preferences)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING id, email, phone, role, tenant_id, store_id, first_name, last_name, reg_type, preferences, created_at`, [
             email || `user_${Date.now()}@noemail.local`,
             phone || null,
             passwordHash,
@@ -160,6 +161,7 @@ class RegisterCommandHandler {
             cmd.firstName,
             cmd.lastName,
             regType,
+            JSON.stringify({ college: cmd.college || '', state: cmd.state || '' }),
         ]);
         if (phone && !email) {
             (0, whatsapp_1.sendRegistrationWhatsApp)(phone, cmd.firstName || '', '').catch((e) => console.warn('[whatsapp] Registration message failed:', e.message));
@@ -169,7 +171,7 @@ class RegisterCommandHandler {
 }
 class GetMeQueryHandler {
     async execute(q) {
-        const user = await (0, db_1.queryOne)(`SELECT u.id, u.email, u.phone, u.role, u.tenant_id, u.store_id, u.first_name, u.last_name, u.created_at,
+        const user = await (0, db_1.queryOne)(`SELECT u.id, u.email, u.phone, u.role, u.tenant_id, u.store_id, u.first_name, u.last_name, u.preferences, u.created_at,
               t.name as tenant_name,
               s.name as store_name
        FROM users u
