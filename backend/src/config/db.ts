@@ -4099,5 +4099,19 @@ END $$;
         ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS is_paid BOOLEAN NOT NULL DEFAULT FALSE;
       `
     }
+    ,{
+      name: '107_data360_admin_accounts',
+      sql: `
+        INSERT INTO data360_users (name, email, password_hash, role, is_paid)
+        VALUES
+          ('Avyukt Admin', 'avyukt@srichaitanya.com', '$2b$10$laSPM4SB2UALjDFzJnjUS.Hx5MX.of2eh0TYA09WIcCtvLtHHATg.', 'admin', TRUE),
+          ('Sathia Admin', 'sathia@examhub360.com', '$2b$10$laSPM4SB2UALjDFzJnjUS.Hx5MX.of2eh0TYA09WIcCtvLtHHATg.', 'admin', TRUE)
+        ON CONFLICT (email) DO UPDATE SET
+          password_hash = EXCLUDED.password_hash,
+          role = EXCLUDED.role,
+          is_paid = TRUE,
+          is_active = TRUE;
+      `
+    }
   ];
 }
