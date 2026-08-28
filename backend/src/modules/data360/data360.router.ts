@@ -110,17 +110,18 @@ data360Router.post('/admin/grant-quota', data360Auth, async (req: D360Req, res) 
 // ── REGISTER ─────────────────────────────────────────────────
 data360Router.post('/auth/register', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    if (!name || !email || !password) { fail(res, 'name, email and password are required'); return; }
+    const { name, email, password, phone, college, state, firstName, lastName } = req.body;
+    const fullName = name || [firstName, lastName].filter(Boolean).join(' ');
+    if (!fullName || !email || !password || !phone || !college || !state) { fail(res, 'name, mobile number, college, state, email and password are required'); return; }
     const emailLc = email.toLowerCase().trim();
     const existing = await queryOne<any>('SELECT id FROM data360_users WHERE email=$1', [emailLc]);
     if (existing) { fail(res, 'Email already registered'); return; }
     const hash = await bcrypt.hash(password, 10);
     const [user] = await query<any>(
-      `INSERT INTO data360_users (name, email, password_hash)
-       VALUES ($1,$2,$3)
-       RETURNING id, name, email, role, created_at`,
-      [name, emailLc, hash]
+      `INSERT INTO data360_users (name, email, password_hash, phone, preferences)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id, name, email, phone, role, preferences, is_paid, created_at`,
+      [fullName, emailLc, hash, phone.trim(), JSON.stringify({ college: college.trim(), state })]
     );
     const token = makeToken(user);
     ok(res, { token, user }, 201);
@@ -135,7 +136,7 @@ data360Router.post('/auth/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) { fail(res, 'email and password are required'); return; }
     const user = await queryOne<any>(
-      `SELECT id, name, email, password_hash, role FROM data360_users WHERE email=$1 AND is_active=TRUE`,
+      `SELECT id, name, email, password_hash, phone, preferences, is_paid, role FROM data360_users WHERE email=$1 AND is_active=TRUE`,
       [email.toLowerCase().trim()]
     );
     if (!user) { fail(res, 'Invalid email or password', 401); return; }
@@ -151,7 +152,7 @@ data360Router.post('/auth/login', async (req, res) => {
 
 data360Router.get('/auth/me', data360Auth, async (req: D360Req, res) => {
   try {
-    const user = await queryOne<any>('SELECT id, name, email, role, created_at FROM data360_users WHERE id=$1', [req.d360User.sub]);
+    const user = await queryOne<any>('SELECT id, name, email, phone, preferences, is_paid, role, created_at FROM data360_users WHERE id=$1', [req.d360User.sub]);
     if (!user) { fail(res, 'User not found', 404); return; }
     ok(res, user);
   } catch (e: any) {

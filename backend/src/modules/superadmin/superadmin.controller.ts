@@ -572,7 +572,7 @@ export async function listData360Users(req: Request, res: Response) {
   try {
     const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
     const rows = await dbQuery<any>(
-      `SELECT id, name, email, role, is_active, purchased_document_quota, created_at
+      `SELECT id, name, email, phone, role, is_active, is_paid AS premium, preferences, purchased_document_quota, created_at
        FROM data360_users ORDER BY created_at DESC LIMIT $1`,
       [limit]
     );
@@ -580,6 +580,15 @@ export async function listData360Users(req: Request, res: Response) {
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
+}
+
+export async function setData360Plan(req: Request, res: Response) {
+  try {
+    const premium = req.body?.premium === true;
+    const [row] = await dbQuery<any>(`UPDATE data360_users SET is_paid=$1 WHERE id=$2 RETURNING id, email, is_paid AS premium`, [premium, req.params.id]);
+    if (!row) { res.status(404).json({ success: false, error: "Data360 user not found" }); return; }
+    res.json({ success: true, data: row });
+  } catch (e: any) { res.status(500).json({ success: false, error: e.message }); }
 }
 
 export async function listCollege360Users(req: Request, res: Response) {
@@ -591,6 +600,20 @@ export async function listCollege360Users(req: Request, res: Response) {
       [limit]
     );
     res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function setCollege360Plan(req: Request, res: Response) {
+  try {
+    const premium = req.body?.premium === true;
+    const [row] = await dbQuery<any>(
+      `UPDATE c360_users SET premium=$1 WHERE id=$2 RETURNING id, email, premium`,
+      [premium, req.params.id]
+    );
+    if (!row) { res.status(404).json({ success: false, error: "College360 user not found" }); return; }
+    res.json({ success: true, data: row });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -731,6 +754,7 @@ router.post("/saferide360/activate-subscription", activateSafeRide360Subscriptio
 router.post("/data360/users/:id/suspend", data360Accounts.suspend);
 router.post("/data360/users/:id/reactivate", data360Accounts.reactivate);
 router.post("/data360/users/:id/send-reminder", data360Accounts.sendReminder);
+router.post("/data360/users/:id/plan", setData360Plan);
 
 router.post("/ride360/drivers/:id/suspend", ride360Drivers.suspend);
 router.post("/ride360/drivers/:id/reactivate", ride360Drivers.reactivate);
@@ -746,6 +770,7 @@ router.post("/saferide360/drivers/:id/send-reminder", saferide360Drivers.sendRem
 router.post("/college360/users/:id/suspend", college360Accounts.suspend);
 router.post("/college360/users/:id/reactivate", college360Accounts.reactivate);
 router.post("/college360/users/:id/send-reminder", college360Accounts.sendReminder);
+router.post("/college360/users/:id/plan", setCollege360Plan);
 
 export default router;
 

@@ -4091,5 +4091,13 @@ END $$;
         );
       `
     }
+    ,{
+      name: '106_data360_college_registration_fields',
+      sql: `
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}';
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS is_paid BOOLEAN NOT NULL DEFAULT FALSE;
+      `
+    }
   ];
 }
