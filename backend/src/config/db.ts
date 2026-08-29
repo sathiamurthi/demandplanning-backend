@@ -4113,5 +4113,22 @@ END $$;
           is_active = TRUE;
       `
     }
+    ,{
+      name: '108_data360_login_activity',
+      sql: `
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+        ALTER TABLE data360_users ADD COLUMN IF NOT EXISTS login_count INT NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS data360_login_events (
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+          user_id UUID NOT NULL REFERENCES data360_users(id) ON DELETE CASCADE,
+          logged_in_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          ip_address INET,
+          user_agent TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_data360_login_events_logged_in_at
+          ON data360_login_events (logged_in_at DESC);
+      `
+    }
   ];
 }

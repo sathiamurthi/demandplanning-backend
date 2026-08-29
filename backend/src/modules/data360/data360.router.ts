@@ -142,6 +142,19 @@ data360Router.post('/auth/login', async (req, res) => {
     if (!user) { fail(res, 'Invalid email or password', 401); return; }
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) { fail(res, 'Invalid email or password', 401); return; }
+
+    await query(
+      `UPDATE data360_users
+       SET last_login_at=NOW(), login_count=COALESCE(login_count, 0) + 1
+       WHERE id=$1`,
+      [user.id]
+    );
+    await query(
+      `INSERT INTO data360_login_events (user_id, ip_address, user_agent)
+       VALUES ($1, $2, $3)`,
+      [user.id, req.ip || null, req.get('user-agent') || null]
+    );
+
     const { password_hash: _, ...safeUser } = user;
     const token = makeToken(safeUser);
     ok(res, { token, user: safeUser });

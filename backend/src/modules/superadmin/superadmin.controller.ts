@@ -572,11 +572,42 @@ export async function listData360Users(req: Request, res: Response) {
   try {
     const limit = Math.min(200, parseInt((req.query.limit as string) || "100"));
     const rows = await dbQuery<any>(
-      `SELECT id, name, email, phone, role, is_active, is_paid AS premium, preferences, purchased_document_quota, created_at
+      `SELECT id, name, email, phone, role, is_active, is_paid AS premium, preferences,
+              purchased_document_quota, created_at, last_login_at, login_count
        FROM data360_users ORDER BY created_at DESC LIMIT $1`,
       [limit]
     );
     res.json({ success: true, data: rows });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+export async function getData360Overview(_req: Request, res: Response) {
+  try {
+    const [accounts, active24h, active7d, registered7d, recentLogins] = await Promise.all([
+      dbQueryOne<any>(`SELECT COUNT(*)::int AS count FROM data360_users`),
+      dbQueryOne<any>(`SELECT COUNT(*)::int AS count FROM data360_users WHERE last_login_at >= NOW() - INTERVAL '24 hours'`),
+      dbQueryOne<any>(`SELECT COUNT(*)::int AS count FROM data360_users WHERE last_login_at >= NOW() - INTERVAL '7 days'`),
+      dbQueryOne<any>(`SELECT COUNT(*)::int AS count FROM data360_users WHERE created_at >= NOW() - INTERVAL '7 days'`),
+      dbQuery<any>(
+        `SELECT e.id, e.logged_in_at, u.name, u.email
+         FROM data360_login_events e
+         JOIN data360_users u ON u.id=e.user_id
+         ORDER BY e.logged_in_at DESC
+         LIMIT 50`
+      ),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        accounts: accounts?.count || 0,
+        active24h: active24h?.count || 0,
+        active7d: active7d?.count || 0,
+        registered7d: registered7d?.count || 0,
+        recentLogins,
+      },
+    });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -745,6 +776,7 @@ router.get("/saferide360/organizations", listSafeRide360Organizations);
 router.get("/saferide360/trips", listSafeRide360Trips);
 router.get("/saferide360/drivers", listSafeRide360Drivers);
 router.get("/data360/users", listData360Users);
+router.get("/data360/overview", getData360Overview);
 router.get("/college360/users", listCollege360Users);
 router.post("/saferide360/activate-subscription", activateSafeRide360Subscription);
 
